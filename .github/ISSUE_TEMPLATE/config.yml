@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 安全漏洞（请勿开公开 Issue）
+    url: mailto:NanshanJim@Outlook.com
+    about: 安全漏洞请用仓库 Security 标签页的私密报告，或发邮件（主题前缀 [direction-drift SECURITY]）。

@@ -1,0 +1,70 @@
+name: 标定报告
+description: 用你自己的真实数据跑出的标定结果（社区里最稀缺的数据）
+title: "[calibration] "
+labels: ["calibration", "contribution"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        哪怕只有结论摘要也有价值。**只报阈值而不报同源的三样（编码器、权重、prompt_version），
+        别人无从判断你的操作点能否套用**——请先看 `CONTRIBUTING.md`「贡献标定报告」一节。
+
+  - type: input
+    id: card
+    attributes:
+      label: 场景卡
+      description: 卡 id 与你自己的样本规模（正例 / 反例 / 边界各多少条）
+      placeholder: "my_agent_v1 / 320 正例 · 180 反例 · 0 边界"
+    validations:
+      required: true
+
+  - type: textarea
+    id: trio
+    attributes:
+      label: 同源三样（必填）
+      description: |
+        1. 编码器型号：`BAAI/bge-small-zh-v1.5` / `DemoEncoder` / 其它（写全名）
+        2. 对齐权重：`{"cone_alignment": …, "constraint_satisfaction": …, "negative_similarity": …}`
+        3. `prompt_version`：生成这批输出的提示词版本
+    validations:
+      required: true
+
+  - type: textarea
+    id: labels
+    attributes:
+      label: 标注口径
+      description: >
+        谁标的、什么标准算"漂移"、有没有多人交叉、分歧怎么处理。
+        这决定别人能不能把你的数字与自己的比。
+    validations:
+      required: true
+
+  - type: textarea
+    id: result
+    attributes:
+      label: 结果
+      description: >
+        AUC、操作点扫描表（`scan_operating_points` 的输出）、你选定的 low/high 与理由、
+        以及 `check_range_consistency(weights, high, low)` 的自检结果（该函数只显形、不改判定）。
+    validations:
+      required: true
+
+  - type: textarea
+    id: pitfalls
+    attributes:
+      label: 踩到的坑
+      description: 卡写错在哪、样本怎么偏、结果和你预期不符的地方。这部分往往比数字更有用。
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: honesty
+    attributes:
+      label: 诚实性自查
+      options:
+        - label: 数据是真实的（不是合成序列）；若是合成，我已明确标注，并说明数字不能代表性能
+          required: true
+        - label: 我没有把 AUC 或某个阈值包装成"性能保证"
+          required: true
+        - label: 数据本身不随报告公开（或已脱敏），我只公开统计结果
+          required: true

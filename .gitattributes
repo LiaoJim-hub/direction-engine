@@ -1,0 +1,19 @@
+# 换行符纪律：源码与文档一律 LF。
+#
+# 为什么显式写：开发者多在 Windows 上工作（git 默认 `core.autocrlf=true`，
+# 会把 LF 转成 CRLF），而 CI 在 Linux 上跑。两边不一致时，一次只有一个字符的
+# 改动会在 diff 里显示成"整个文件都变了"——**真实改动被换行噪声淹没**，
+# 评审时最容易漏看的就是这种 diff。
+#
+# `text=auto` 让 git 自己识别文本与二进制；`eol=lf` 强制工作区与索引都用 LF。
+* text=auto eol=lf
+
+# 二进制：不参与任何换行或编码转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.npz binary
+*.pdf binary
+*.docx binary

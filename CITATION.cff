@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Direction Engine (direction-drift)"
+abstract: >-
+  A direction-drift detection engine for AI agents, together with a
+  zero-dependency multi-node coexistence layer and an output-provenance
+  labelling layer for valid inference. It only surfaces, never auto-corrects:
+  alerts belong to the engine, decisions belong to humans.
+type: software
+authors:
+  - name: NanshanJim
+    email: NanshanJim@Outlook.com
+    website: "https://github.com/LiaoJim-hub"
+version: 2.3.6
+date-released: "2026-09-29"
+license: Apache-2.0
+repository-code: "https://github.com/LiaoJim-hub/direction-engine"
+url: "https://github.com/LiaoJim-hub/direction-engine"
+keywords:
+  - ai-agent
+  - drift-detection
+  - alignment
+  - guardrails
+  - provenance
+  - llm-evaluation

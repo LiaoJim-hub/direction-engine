@@ -1,0 +1,64 @@
+name: Bug 报告
+description: 可复现的缺陷（不是判定精度问题）
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先确认一件事：**判定结论的对错（漏判、误判、阈值不理想）不是 bug**，
+        请改用「标定报告」模板。
+
+        安全漏洞请走仓库根目录 `SECURITY.md` 里的私密渠道，**不要开公开 Issue**。
+
+  - type: input
+    id: version
+    attributes:
+      label: 引擎版本
+      description: "运行 `python -c \"import direction_drift; print(direction_drift.__version__)\"` 得到"
+      placeholder: "2.3.3"
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: 运行环境
+      description: Python 版本 / 操作系统 / 编码器（DemoEncoder 还是真实嵌入模型，型号是什么）
+      placeholder: "Python 3.12 / Windows 11 / DemoEncoder"
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 最小复现
+      description: 一段能直接跑出问题的代码。请贴代码，不要只描述。
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望与实际
+      description: 实际输出（含完整报错栈）＋你以为应该的行为＋为什么。
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充
+      description: 是否已标定？是否用了场景卡（可附卡 JSON）？是否在真实连续文本流上出现？
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: 边界自查
+      description: 本项目已知的能力上限写在各文档的「已知边界」里。请先勾选以下自查，避免把"已披露的刻意上限"当 bug 报。
+      options:
+        - label: 我已确认这不是 README「已知边界」里已披露的刻意上限（如约束层的词法边界、`ok` 不等于"保证合规"、未标定不判定）
+          required: true
