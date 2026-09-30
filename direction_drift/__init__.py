@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
 """direction-drift：AI 方向漂移检测引擎（Direction Engine）
 
-版本：2.3.6
+版本：2.3.7
 蓝本：同目录《方向漂移检测工具：MVP代码框架 v2.2（最终版）.md》
+2.3.7 更正：**无代码变更**。更正测试数口径——`docs/persistence.md` 注册进
+      `tests/test_docs_consistency.py` 的 `DOCS` 后，该守卫按 `.md` 参数化、
+      每份生成 2 条用例，全仓实为 **207**（README 与 CHANGELOG 原写 205）。
+      另补 `.zenodo.json`（软件归档元数据）。出这个版本号是为了让归档快照自洽。
 2.3.6 新增：会话存储接缝 `core.session_store`（`Session` 容器与三方法的
       `SessionStore` ＋进程内 `InMemorySessionStore`）。`api/server.py` 改为
       `create_app()` 工厂（**启动命令须加 `--factory`**），会话读写全部经 store
@@ -26,4 +30,4 @@
 2.3.0 新增：多节点共存层 `coexistence`（自我降级协议 + 同步传播信封，零依赖）。
 2.2.4 新增：状态序列化（detector/protocol/session_state），托管层持久化用。
 """
-__version__ = "2.3.6"
+__version__ = "2.3.7"

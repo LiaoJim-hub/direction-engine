@@ -34,7 +34,7 @@ numpy / pydantic / scikit-learn / jieba；`[sbert]`、`[api]`、`[llm]`、`[dev]
 
 ```bash
 pip install -e .            # 核心依赖仅 numpy/pydantic/scikit-learn/jieba
-pytest                      # 207 项测试全离线通过（v2.3.6 实测）
+pytest                      # 207 项测试全离线通过（v2.3.7 实测）
 python examples/demo.py     # 一条命令跑通 建锥→标定→检测→通道信号
 python examples/demo.py roleplay_companion_v1   # 换一张卡再跑
 ```
@@ -272,7 +272,7 @@ no_data("order_db")      # L5：输出"无数据"，不编造
 
 ## 版本沿革
 
-当前版本 **v2.3.6**（2026-09-29）。完整沿革、每条变更的理由、以及宪法修订记录，
+当前版本 **v2.3.7**（2026-09-30）。完整沿革、每条变更的理由、以及宪法修订记录，
 统一维护在 [`CHANGELOG.md`](CHANGELOG.md)——README 不再重复一份，避免两处失真。
 （版本指针由 `tests/test_docs_consistency.py` 断言，不会再悄悄落后。）
 
