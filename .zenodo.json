@@ -1,0 +1,30 @@
+{
+  "title": "方向引擎（Direction Engine）：面向 LLM 智能体的运行时方向漂移监测与人类返回协议",
+  "upload_type": "software",
+  "access_right": "open",
+  "license": "Apache-2.0",
+  "creators": [
+    {
+      "name": "NanshanJim"
+    }
+  ],
+  "description": "<p><strong>方向引擎</strong>是一个运行时方向漂移监测与人类返回协议的实现，面向长时程 LLM 智能体。它处理的风险是：每一步输出都符合内容安全规范，整体轨迹却逐渐偏离初始方向。</p><p>引擎由四个组件与一条架构原则构成：<strong>方向锥</strong>（由核心样本分布的 95 分位开角定义方向，而非由单点目标文本定义，故可区分“主题相似但方向相反”的输出）、<strong>组合判据</strong>（语义对齐分 + 长度保护 + 格式白名单 + 场景规则层交叉验证）、<strong>轨迹特征</strong>（滚动均值、斜率、低分占比、CUSUM）、<strong>返回协议</strong>（可停 / 可看 / 可再选，不自动修正）；架构原则为<strong>策略与机制分离</strong>。</p><p>引擎代码内不含任何具体规则：规则由场景卡（JSON 数据）声明，换场景只换卡、不改引擎。阈值不在卡里，属标定产物，与场景数据分离。标定流程（PR 扫描、操作点扫描表、人工选点）已实现为公开函数，标定数据不随本软件发布。</p><p><strong>已知限度（如实标注）</strong>：未标定即不判定；空输出与低于认识论下限的输入分别标记为 <code>no_output</code> 与 <code>too_short</code>，既不记低分也不记高分；约束的动作判定须使用结构化声明，自由文本形态仅为兜底并会显式产出 <code>unverifiable</code>；CUSUM 的三个默认参数未经真实数据调优；引擎不承诺消除漂移，只承诺检测它、呈报它，并把决定权交回人。</p>",
+  "keywords": [
+    "AI safety",
+    "direction drift",
+    "runtime monitoring",
+    "return protocol",
+    "LLM agents",
+    "mechanism-policy separation",
+    "方向漂移",
+    "运行时监测",
+    "返回协议"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/LiaoJim-hub/direction-engine",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    }
+  ]
+}

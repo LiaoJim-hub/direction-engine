@@ -66,7 +66,13 @@
 
 ### 测试
 
-`160 → 205 项`（新增 45）：
+`160 → 207 项`（新增 45 项代码用例；另 2 条来自 `docs/persistence.md` 注册进
+`tests/test_docs_consistency.py` 的 `DOCS`——该守卫按 `.md` 参数化，每份生成 2 条）：
+
+> **2026-09-30 更正**：本节与 README「快速开始」原写 `205`。那是
+> `docs/persistence.md` 注册进 `DOCS` **之前**的数字，注册后全仓实为 **207**
+> （实测 `pytest -o addopts=""`）。两处一并更正——测试数写死就得跟着维护，
+> 这在项目内一贯如此。
 
 - `tests/test_session_store.py`（21 项）：接口最小性守卫（断言抽象方法就是那三个，
   防有人"顺手"把 `snapshot/restore` 塞回来）、存储层无第三方 import 的架构守卫、
