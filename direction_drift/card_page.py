@@ -27,6 +27,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Sequence
 
 from .scenario import FINGERPRINT_VERSION
+from .verify import fingerprint_line
 
 # 建锥层的硬门，与 `DirectionCone.from_samples` 一致（此处只用于"并排显示缺口"，不做判定）
 MIN_CORE = 20
@@ -130,30 +131,42 @@ def fingerprint_state(live: str, recorded: Optional[str]) -> Dict[str, str]:
 
     `未记录` / `不可比` / `不一致` / `一致`。只有最后一种才允许说"阈值与卡同源"。
 
-    `不可比`（前缀＝算法版本不同）**必须与「不一致」分开**：前者不是卡的问题，
+    `algo_mismatch`（前缀＝算法版本不同）**必须与「不一致」分开**：前者不是卡的问题，
     它的文案必须明确否认"卡被改过"——错误归因会让人去重跑本来正确的标定，
     代价比沉默更大。
+
+    **判定不在这里**：本函数只把判定结果渲染成人读文案，判定统一走
+    `verify.fingerprint_line()`——`de verify` 与本页面共用同一份，否则两处实现对
+    同一输入给出不同判定（历史上本页曾自成一套 `match`/`incomparable`/`malformed`
+    词汇，与复算侧的 `ok`/`algo_mismatch` 分叉，故收敛之）。
     """
-    if not recorded:
+    fp = fingerprint_line(recorded, live)
+    level = fp["level"]
+
+    if level == "missing":
         return {"state": "missing", "cls": "b-bad",
                 "text": "未记录——标定产物里没有卡指纹，<b>无从判断阈值是否对着这张卡标出</b>。"}
-    if ":" not in str(recorded):
-        return {"state": "malformed", "cls": "b-warn",
-                "text": f"格式异常（{_esc(recorded)}）——无法解析，<b>不猜测</b>。"}
-    lv, _, ld = str(live).partition(":")
-    rv, _, rd = str(recorded).partition(":")
-    if lv != rv:
-        return {"state": "incomparable", "cls": "b-warn",
+
+    if level == "algo_mismatch":
+        # 记录侧没有版本前缀 ⇒ 旧格式/格式异常，算法不明、无从解析。
+        # 与"算法版本不同"同属不可比，但文案侧重改为"不猜测"。
+        if not fp["recorded_algo"]:
+            return {"state": "algo_mismatch", "cls": "b-warn",
+                    "text": f"格式异常（{_esc(recorded)}）——无法解析，<b>不猜测</b>。"}
+        return {"state": "algo_mismatch", "cls": "b-warn",
                 "text": (f"不可比：记录的是 <code>{_esc(recorded)}</code>，算法版本 "
-                         f"<code>{_esc(rv)}</code> 与当前的 <code>{_esc(lv)}</code> 不同。"
+                         f"<code>{_esc(fp['recorded_algo'])}</code> 与当前的 "
+                         f"<code>{_esc(fp['live_algo'])}</code> 不同。"
                          f"<b>这<u>不是</u>卡被改过</b>，是比对规则变了——"
                          f"<b>不要</b>因此重跑标定。")}
-    if ld != rd:
+
+    if level == "mismatch":
         return {"state": "mismatch", "cls": "b-bad",
                 "text": (f"不一致：记录 <code>{_esc(recorded)}</code>，当前 "
                          f"<code>{_esc(live)}</code>。这张卡相对标定时<b>已被改动</b>，"
                          f"原阈值可能失效——<b>分数不可直接用于复核判断</b>。")}
-    return {"state": "match", "cls": "b-ok",
+
+    return {"state": "ok", "cls": "b-ok",
             "text": f"一致（<code>{_esc(live)}</code>）——阈值是对着当前这张卡标出的。"}
 
 

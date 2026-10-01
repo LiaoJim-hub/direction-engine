@@ -7,6 +7,52 @@
 场景卡与标定数据不在本仓，它们的版本另由标定文件的 `prompt_version` 绑定
 （改版后必须复检——见 CONSTITUTION.md 第三节"标定诚实性"）。
 
+## [2.5.0] - 2026-10-02
+
+**新增复算内核与 `de verify`。** 让「可验证」从一句承诺变成一条能跑的命令。
+
+### 新增
+
+- **`direction_drift/verify.py`（复算内核）**
+  - `build_artifact()`：组装判定产物信封（最小可复算溯源集）。**不判定**——
+    判定归 `core/`，这里只把判定的条件与结果如实装进去。
+  - `compare_artifacts()`：三层比对，**先判可比性、再判数值**。顺序不能反：
+    换引擎版本与判错方向在只看数字时完全同形，先比值会把「不可比」误报成
+    「不一致」。
+    - 可比性：`artifact_schema_version` / `engine.version` /
+      `card.fingerprint_algo` / `encoder.name` / `calibration.weights` /
+      `calibration.mode` / `detector.config`
+    - 同源性：`card.fingerprint_digest` / `calibration.card_fingerprint` /
+      `card.fingerprint_status`
+    - 数值：`judgment.texts_digest` / 逐条 `score` / `drift_level` / `suspect`
+  - `ARTIFACT_SCHEMA_VERSION`、`VERDICTS`、`EXIT_CODES`（语义面与机械面同序）。
+- **`de verify`（模式 A：A/B 比对）**——零依赖，只读 JSON 与引擎纯函数，
+  **不加载编码器**，可在无网络、无模型的机器上跑。「可独立复算」的前提是
+  验证方不必拥有与我相同的环境。退出码 0 / 1 / 2 / 3 / 4，其中 `2`（不可比）
+  **不是失败**，是"条件不同、结论不可对话"——脚本必须能区分它，否则 CI 会把
+  "换了引擎版本"误报成"回归"。
+  - `--tolerance` 是**显式参数**而非内置常量：实测残差从 0.0005 到 0.0111
+    分布很宽，任何单一阈值都会在某一张卡上误判。报告必须列出**逐条残差**
+    与 `max_abs_delta`，不得只给一个通过/不通过——决定权在人。
+  - 模式 B（`--replay` 就地复算）**本版未实现**，直说，不静默降级。
+
+### 变更
+
+- **卡指纹判定收敛为引擎公共函数 `fingerprint_line()`（T1b）**——四值闭集
+  `ok` / `mismatch` / `missing` / `algo_mismatch`。
+  此前 `card_page.fingerprint_state` 自成一套 `match` / `incomparable` /
+  `malformed` 词汇，与复算侧**对无冒号输入给出不同判定**（一判「格式异常」，
+  一判「算法不可比」），属第二处分叉；两处实现对同一输入给出不同判定，
+  "一致"这个词就没有意义了。现 `card_page` 只做渲染，判定唯一。
+  `malformed` 并入 `algo_mismatch`：算法版本不明 ⇒ 不可比；契约 `Check.status`
+  在 provenance 层的闭集里没有第五值的容身处，且两者需要同一个警示——
+  **不要因此重跑标定**。
+
+### 诚实边界
+
+- `encoder.weights_hash` 为 null 时，复算报告只写「卡同源已证；分数可复现
+  **未证**」，**不得**写成「复算成功」——把未做到说成做到。
+
 ## [2.4.0] - 2026-10-01
 
 **新增场景卡指纹与 `de` 命令行。**

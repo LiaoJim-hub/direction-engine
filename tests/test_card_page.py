@@ -190,9 +190,9 @@ def test_fingerprint_state_missing():
     assert "无从判断" in st["text"]
 
 
-def test_fingerprint_state_match():
+def test_fingerprint_state_ok():
     st = fingerprint_state("c2:aaaa", "c2:aaaa")
-    assert st["state"] == "match"
+    assert st["state"] == "ok"
     assert "是对着当前这张卡标出的" in st["text"]
 
 
@@ -203,10 +203,15 @@ def test_fingerprint_state_mismatch():
     assert "已被改动" in st["text"]
 
 
-def test_fingerprint_state_version_change_is_incomparable_not_mismatch():
-    """算法版本不同**不是卡的问题**——绝不能被读成"卡被改过"。"""
+def test_fingerprint_state_version_change_is_algo_mismatch_not_mismatch():
+    """算法版本不同**不是卡的问题**——绝不能被读成"卡被改过"。
+
+    词汇经 T1b 收敛为契约的 `algo_mismatch`（原 `incomparable`）：复算侧的
+    `de verify` 与本页面共用 `verify.fingerprint_line()`，两处词汇必须同一套，
+    否则"report 与 verify 对同一输入给出一致判定"无法机械检验。
+    """
     st = fingerprint_state("c2:aaaa", "c1:aaaa")
-    assert st["state"] == "incomparable"
+    assert st["state"] == "algo_mismatch"
     assert "不是" in st["text"]
     assert "不要" in st["text"]
 
@@ -231,8 +236,17 @@ def test_fingerprint_status_source_is_stated():
 
 
 def test_malformed_recorded_fingerprint_is_not_guessed():
+    """记录侧没有版本前缀 ⇒ 旧格式/格式异常，**不猜测**。
+
+    归入 `algo_mismatch`（不是单独第五值）：算法版本不明 ⇒ 无法与当前算法比较
+    ⇒ 不可比。契约 `Check.status` 在 provenance 层的闭集里没有第五值的容身处，
+    且此类情形同样需要"不要因此重跑标定"的警示。
+
+    文案侧重与"算法版本不同"不同：这里强调的是**无法解析、不猜测**，
+    由渲染层据 `recorded_algo` 是否为空来区分——两者 level 相同，措辞不同。
+    """
     st = fingerprint_state("c2:aaaa", "没有冒号的字符串")
-    assert st["state"] == "malformed"
+    assert st["state"] == "algo_mismatch"
     assert "不猜测" in st["text"]
 
 

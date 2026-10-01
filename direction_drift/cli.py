@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .report_html import render_report_html
+from .verify import DEFAULT_TOLERANCE, EXIT_CODES, compare_artifacts
 
 # 与 README「建卡四问」对齐的硬门（build_cone 层拒绝，不是本 CLI 发明的）
 _MIN_CORE = 20
@@ -431,6 +432,64 @@ def cmd_card(args) -> int:
     return 0
 
 
+def cmd_verify(args) -> int:
+    """比对两份判定产物：条件是否同源、数值是否对得上。
+
+    模式 A（A/B 比对）**零依赖**：只读 JSON 与引擎的纯函数，不加载编码器，
+    可在无网络、无模型的机器上跑——"可独立复算"的前提是验证方不必拥有
+    与我相同的环境。
+
+    模式 B（`--replay` 就地复算）本版未实现：它需要加载编码器重放整条判定链，
+    做成半成品等于让人以为自己在复算。未实现就直说，不静默降级。
+    """
+    if getattr(args, "replay", None):
+        print("de verify --replay 尚未实现：就地复算需要加载编码器重放整条判定链，"
+              "本版只提供模式 A（A/B 比对，零依赖、离线可跑）。", file=sys.stderr)
+        return EXIT_CODES["input_error"]
+
+    if not args.a or not args.b:
+        print("模式 A 需要 --a 与 --b 两份产物（或改用 --replay）。",
+              file=sys.stderr)
+        return EXIT_CODES["input_error"]
+
+    try:
+        a = json.loads(Path(args.a).read_text(encoding="utf-8"))
+        b = json.loads(Path(args.b).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"读取产物失败：{exc}", file=sys.stderr)
+        return EXIT_CODES["input_error"]
+
+    out = compare_artifacts(a, b, tolerance=args.tolerance)
+
+    print(f"复算结论：{out['verdict']}（exit {out['exit_code_equivalent']}）")
+    if out["verdict"] == "not_comparable":
+        print("  **不可比不是不一致**：条件不同则结论不可对话，别把它读成回归。")
+    for layer, title in (("comparability", "可比性"), ("provenance", "同源性"),
+                         ("numeric", "数值")):
+        rows = [c for c in out["checks"] if c["layer"] == layer]
+        if not rows:
+            continue
+        print(f"\n[{title}]")
+        for c in rows:
+            ok = c["status"] in ("equal", "within_tolerance")
+            delta = f"（Δ={c['delta']}）" if c.get("delta") is not None else ""
+            print(f"  {'=' if ok else '!'} {c['key']}: {c['status']}{delta}")
+    if out["residuals"]["per_item"]:
+        print(f"\n[残差] max_abs_delta={out['residuals']['max_abs_delta']}"
+              f"（tolerance={args.tolerance}）")
+        for r in out["residuals"]["per_item"]:
+            print(f"  items[{r['index']}] Δ={r['delta']}")
+    for n in out["notes"]:
+        print(f"\n告知：{n}")
+
+    if args.json_out:
+        Path(args.json_out).write_text(json.dumps(out, ensure_ascii=False, indent=2),
+                                       encoding="utf-8")
+        print(f"\n机器可读报告已写入：{args.json_out}")
+
+    return out["exit_code_equivalent"]
+
+
 # ---------------------------------------------------------------- 入口
 
 def build_parser() -> argparse.ArgumentParser:
@@ -480,6 +539,18 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--out", required=True)
     d.add_argument("--title")
     d.set_defaults(func=cmd_card)
+
+    e = sub.add_parser("verify",
+                       help="比对两份判定产物：条件是否同源、数值是否对得上")
+    e.add_argument("--a", help="基准产物 JSON（模式 A）")
+    e.add_argument("--b", help="对照产物 JSON（模式 A）")
+    e.add_argument("--replay", help="模式 B：就地复算（本版未实现）")
+    e.add_argument("--tolerance", type=float, default=DEFAULT_TOLERANCE,
+                   help=f"逐条分数的容差（默认 {DEFAULT_TOLERANCE}）——实测残差"
+                        "分布很宽，它是显式参数而非内置常量")
+    e.add_argument("--json", dest="json_out", metavar="PATH",
+                   help="机器可读报告输出路径")
+    e.set_defaults(func=cmd_verify)
 
     return p
 

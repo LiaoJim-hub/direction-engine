@@ -1,8 +1,23 @@
 # -*- coding: utf-8 -*-
 """direction-drift：AI 方向漂移检测引擎（Direction Engine）
 
-版本：2.4.0
+版本：2.5.0
 蓝本：同目录《方向漂移检测工具：MVP代码框架 v2.2（最终版）.md》
+2.5.0 新增：**复算内核 `verify.py` 与 `de verify`**——"可验证"不是说我们保证对，
+      而是把判定过程打包成一份第三方能自己重算的产物。
+      · `build_artifact()` 组装判定产物信封（最小可复算溯源集，**不判定**）；
+      · `compare_artifacts()` 三层比对：**先判可比性、再判数值**——顺序不能反，
+        否则"换了引擎版本"会被误报成"回归"。退出码 0=一致 / 1=真不一致 /
+        2=**不可比** / 3=输入错误 / 4=无法复算；`2` 不是失败，是"条件不同、
+        结论不可对话"，脚本必须能区分它。`tolerance` 是**显式参数**而非内置
+        常量，且必须列出逐条残差——决定权在人（实测残差分布很宽）。
+      · 诚实边界：`encoder.weights_hash` 为 null 时，报告只写"卡同源已证、
+        分数可复现**未证**"，不得写成"复算成功"。
+      另 **T1b 收敛卡指纹判定为引擎公共函数** `fingerprint_line()`（四值闭集
+      ok / mismatch / missing / algo_mismatch）——此前 `card_page.fingerprint_state`
+      自成一套 match / incomparable / malformed 词汇，与复算侧**对无冒号输入
+      给出不同判定**，属第二处分叉。现页面只做渲染，判定唯一；`malformed`
+      并入 `algo_mismatch`（契约 provenance 层闭集无第五值容身处）。
 2.4.0 新增：**场景卡指纹** `scenario.card_fingerprint()` / `ScenarioCard.fingerprint()`
       ——标定产物此前绑定了编码器 / 权重 / 提示词版本，**唯独没绑卡本身**：
       卡一改，分数分布随之移动、原阈值失效，而标定文件不报警、仍自称正式标定。
@@ -52,4 +67,4 @@
 2.3.0 新增：多节点共存层 `coexistence`（自我降级协议 + 同步传播信封，零依赖）。
 2.2.4 新增：状态序列化（detector/protocol/session_state），托管层持久化用。
 """
-__version__ = "2.4.0"
+__version__ = "2.5.0"
