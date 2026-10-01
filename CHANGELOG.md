@@ -53,6 +53,51 @@
 - `encoder.weights_hash` 为 null 时，复算报告只写「卡同源已证；分数可复现
   **未证**」，**不得**写成「复算成功」——把未做到说成做到。
 
+## [2.5.1] - 2026-10-02
+
+**补上复算链缺失的产出端：** `de check --artifact` 与规范摘要收口。
+
+2.5.0 交付的是复算内核与比对命令（消费端），但没有**任何一条命令会产出契约
+定义的判定产物**——`de check --jsonl` 写的是"逐条明细 + `_meta`"，
+`de report` 读它出报告，那不是产物信封。于是 PRD §8.4 的成功流
+（`de check` → `de verify` → 逐条一致）当时**无处落地**：`de verify` 要两份产物，
+而产物只能手写。本版把这一段补完。
+
+### 新增
+
+- **`de check --artifact PATH`**：把一次判定写成判定产物信封（JSON，
+  契约 `judgment-artifact.schema.json` 的最小可复算溯源集）。
+  **刻意不与 `--jsonl` 合并**——两者语义不同：前者是"可复算证据"，
+  后者是"报告输入"，混进一个文件会让两种语义互相污染。
+- **`verify.texts_digest()` / `verify.results_digest()`**：规范摘要的**唯一算法落点**，
+  规范形式逐字照契约（`ensure_ascii=false`、`separators=(",",":")`、
+  结果侧 `sort_keys=true` 且 `score` 取 6 位小数）。
+  **为什么必须收口成一处**：服务端 `replay` 要算出与产出端逐位相同的摘要，
+  两处各写一遍就会把"算法分叉"报成"输入不同、条目无法对齐"——
+  那是摘要造出来的假警报，不是真的判定差异。
+  `results_digest([])` 返回 `None` 而非"空数组的摘要"：契约允许 null，
+  且 null 的语义是"退化为逐条比对"；给一个空摘要会让"两侧都没判"
+  看起来像"判出了同样的空结果"。
+- `build_artifact()` 现在**能算摘要就算**（给了 `judgment.texts` 或 `items` 即补），
+  但**不覆写调用方自带的值**——自带即声明"我按自己的口径算过"。
+
+### 修复
+
+- **`de check` 的标定透传不全（产物天生不可复算）**：`_load_calibration` 此前
+  只取 `low` / `high`，`weights` / `card_fingerprint` / `prompt_version` 全丢，
+  而契约里 `calibration.weights` 缺失即判**不可比**——产出的产物永远过不了
+  第一层可比性。这正是挑刺 S4 指出的"三处未传之一"（另两处在运营仓）。
+  现在两条路径都如实记录：正式标定路径透传文件里的值（文件没记就 `null`，不猜）；
+  自标定路径记**实际生效的** `DEFAULT_WEIGHTS`（打分没传 weights 时引擎回落的就是它，
+  与私有仓 `build_calibration.py:191` 同一口径）。
+
+### 说明
+
+- **合成标定（`mode=synthetic`）按契约刻意不可比**：两侧只要有一侧是 synthetic，
+  `compare_artifacts` 就判 `not_comparable`——用合成阈值去"验证判定"没有意义。
+  故端到端一致性的演示必须带**正式标定**（`--calibration`），
+  这不是缺陷，是内核既定的诚实边界。
+
 ## [2.4.0] - 2026-10-01
 
 **新增场景卡指纹与 `de` 命令行。**

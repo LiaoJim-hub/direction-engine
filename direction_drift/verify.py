@@ -39,6 +39,8 @@
 必须走 `LEVEL_TO_CHECK_STATUS` 映射——两个闭集的词不一样，直接透传会越界。
 """
 
+import hashlib
+import json
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .scenario import FINGERPRINT_VERSION
@@ -52,9 +54,15 @@ __all__ = [
     "VERDICTS",
     "EXIT_CODES",
     "DEFAULT_TOLERANCE",
+    "texts_digest",
+    "results_digest",
     "build_artifact",
     "compare_artifacts",
 ]
+
+# 摘要前缀与契约 `judgment-artifact.schema.json` 的 pattern 一一对应，
+# 改动此处等于改产物格式——必须同步 ARTIFACT_SCHEMA_VERSION 与契约文件。
+_DIGEST_PREFIX = "sha256:"
 
 # ---------------------------------------------------------------- 产物信封版本
 
@@ -426,6 +434,54 @@ def compare_artifacts(a: Dict[str, Any], b: Dict[str, Any], *,
     }
 
 
+# ------------------------------------------------------------------ 规范摘要
+
+
+def texts_digest(texts: Sequence[str], *, ensure_ascii: bool = False) -> str:
+    """有序文本流的规范化摘要（契约 `judgment.texts_digest` 的唯一算法落点）。
+
+    规范形式照契约：对文本数组**按原顺序**做
+    `json.dumps(texts, ensure_ascii=False, separators=(",", ":"))`，取 UTF-8
+    字节的 SHA-256，小写十六进制，前缀 `sha256:`。无 BOM、无尾换行、无多余空白。
+
+    **为什么要收口成一个函数**：复算端（服务端 `replay`）必须能算出与产出端
+    逐位相同的摘要，否则 `compare_artifacts` 的 numeric 层会把它读成
+    "输入不同、条目无法对齐"——那份"不一致"是摘要算法分叉造出来的假警报。
+    两处各写一遍就等于埋一颗这样的雷，故算法只此一处。
+    """
+    blob = json.dumps(list(texts), ensure_ascii=ensure_ascii,
+                      separators=(",", ":"))
+    return _DIGEST_PREFIX + hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def results_digest(items: Optional[Sequence[Dict[str, Any]]],
+                   *, ensure_ascii: bool = False) -> Optional[str]:
+    """逐条判定结果的规范化摘要（契约 `judgment.results_digest`）。
+
+    规范形式照契约：对有序数组 `[{index, score, drift_level, suspect}]` 做
+    `json.dumps(..., ensure_ascii=False, sort_keys=True, separators=(",", ":"))`，
+    其中 `score` 四舍五入到 6 位小数（可为 null）。
+
+    **空列表返回 None 而不是一个"空串的摘要"**：契约里 `results_digest` 本就
+    允许 null，且 null 的语义是"退化为逐条比对，仍可复算"；给一个空数组的
+    摘要会让两侧"都没判"看起来像"判出了同样的空结果"。
+    """
+    if not items:
+        return None
+    rows: List[Dict[str, Any]] = []
+    for i, it in enumerate(items):
+        score = it.get("score")
+        rows.append({
+            "index": it.get("index", i),
+            "score": None if score is None else round(float(score), 6),
+            "drift_level": it.get("drift_level"),
+            "suspect": it.get("suspect"),
+        })
+    blob = json.dumps(rows, ensure_ascii=ensure_ascii, sort_keys=True,
+                      separators=(",", ":"))
+    return _DIGEST_PREFIX + hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
 def build_artifact(*, engine_version: str, card, encoder_info: Dict[str, Any],
                    calibration: Optional[Dict[str, Any]] = None,
                    detector_config: Optional[Dict[str, Any]] = None,
@@ -435,10 +491,27 @@ def build_artifact(*, engine_version: str, card, encoder_info: Dict[str, Any],
 
     **不判定**：判定由 `core/` 负责，本函数只把判定的**条件与结果**如实装进去。
     装进去的东西越少，"可复算"越可信——所以只收那些能被第三方独立检验的项。
+
+    摘要**能算就算**：给了 `judgment.texts` 就补 `texts_digest`，给了 `items`
+    就补 `results_digest`；调用方自带的值**不覆写**——自带即声明"我按自己的
+    口径算过"，本函数不替它改。两者都缺时字段为 null（契约允许），
+    复算端退化为逐条比对。
     """
     fp = getattr(card, "fingerprint", None)
     fp_text = fp() if callable(fp) else fp
     algo, digest = split_fingerprint(fp_text)
+
+    judgment_out = dict(judgment or {})
+    if not judgment_out.get("texts_digest"):
+        texts = judgment_out.get("texts")
+        if isinstance(texts, list) and texts:
+            judgment_out["texts_digest"] = texts_digest(texts)
+    items_out = [dict(x) for x in (items or [])]
+    if not judgment_out.get("results_digest"):
+        rd = results_digest(items_out)
+        if rd:
+            judgment_out["results_digest"] = rd
+
     return {
         "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
         "engine": {"name": "direction-drift", "version": engine_version},
@@ -452,6 +525,6 @@ def build_artifact(*, engine_version: str, card, encoder_info: Dict[str, Any],
         "encoder": dict(encoder_info or {}),
         "calibration": dict(calibration or {}),
         "detector": {"config": dict(detector_config or {})},
-        "judgment": dict(judgment or {}),
-        "items": [dict(x) for x in (items or [])],
+        "judgment": judgment_out,
+        "items": items_out,
     }

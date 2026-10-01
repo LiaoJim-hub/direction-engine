@@ -1,8 +1,17 @@
 # -*- coding: utf-8 -*-
 """direction-drift：AI 方向漂移检测引擎（Direction Engine）
 
-版本：2.5.0
+版本：2.5.1
 蓝本：同目录《方向漂移检测工具：MVP代码框架 v2.2（最终版）.md》
+2.5.1 新增：**规范摘要收口** `verify.texts_digest()` / `results_digest()`，以及
+      `de check --artifact`（把一次判定写成**判定产物信封** JSON）。
+      动因是复算链上缺了产出端：`de verify` 要有两份产物才能比，而此前
+      **没有任何一条命令会产出契约定义的产物**（`--jsonl` 是报告输入，不是
+      产物信封），PRD §8.4 的成功流当时无处落地。摘要算法只此一处——
+      重算端另写一遍，就会把"算法分叉"误报成"输入不同、条目无法对齐"。
+      另修 `de check` 的标定透传：此前只取 low/high，`weights` /
+      `card_fingerprint` / `prompt_version` 全丢，产出的产物**天生不可复算**
+      （契约里 `calibration.weights` 缺失即判不可比）。
 2.5.0 新增：**复算内核 `verify.py` 与 `de verify`**——"可验证"不是说我们保证对，
       而是把判定过程打包成一份第三方能自己重算的产物。
       · `build_artifact()` 组装判定产物信封（最小可复算溯源集，**不判定**）；
@@ -67,4 +76,4 @@
 2.3.0 新增：多节点共存层 `coexistence`（自我降级协议 + 同步传播信封，零依赖）。
 2.2.4 新增：状态序列化（detector/protocol/session_state），托管层持久化用。
 """
-__version__ = "2.5.0"
+__version__ = "2.5.1"

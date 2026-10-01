@@ -34,8 +34,10 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from . import __version__ as _ENGINE_VERSION
 from .report_html import render_report_html
-from .verify import DEFAULT_TOLERANCE, EXIT_CODES, compare_artifacts
+from .verify import (DEFAULT_TOLERANCE, EXIT_CODES, build_artifact,
+                     compare_artifacts)
 
 # 与 README「建卡四问」对齐的硬门（build_cone 层拒绝，不是本 CLI 发明的）
 _MIN_CORE = 20
@@ -235,9 +237,16 @@ def _load_calibration(args, card, align) -> Tuple[Dict, List[str]]:
         if not calib.get("mode"):
             warns.append("标定文件没有 mode 字段：标定性质未标注，"
                          "本命令不猜测它是正式还是合成。")
+        # `weights` / `card_fingerprint` 从这里起**带进产物**：它们是契约里的
+        # 可比性条件（calibration.weights 缺失 ⇒ not_comparable），此前本命令
+        # 只取 low/high，产出的产物天生不可复算——挑刺 S4 指出的三处未传之一。
+        # 标定文件没记 weights 时**不猜**：记 null，让复算端判不可比。
         return {"low": float(low), "high": float(high),
                 "auc": calib.get("auc"), "mode": calib.get("mode"),
-                "source": calib.get("source", "")}, warns
+                "source": calib.get("source", ""),
+                "weights": calib.get("weights"),
+                "prompt_version": calib.get("prompt_version"),
+                "card_fingerprint": calib.get("card_fingerprint")}, warns
 
     # 无标定 → 卡内样本自标定，性质 synthetic
     from .calibration.roc import calibrate_thresholds
@@ -251,9 +260,15 @@ def _load_calibration(args, card, align) -> Tuple[Dict, List[str]]:
     warns.append("未提供 --calibration：阈值由卡内样本自标定，性质为 synthetic。"
                  "合成样本的 AUC 只作链路健康检查（>0.7），不构成性能估计——"
                  "分数仅供观察，不可用于复核判断。")
+    # 自标定路径同样要记**实际生效的权重**：打分没传 weights，引擎回落的
+    # 就是 DEFAULT_WEIGHTS（与私有仓 build_calibration.py:191 同一口径）。
+    # 记 null 会让产物"天生不可复算"，而它其实是已知的。
+    from .core.alignment import DEFAULT_WEIGHTS
     return {"low": calib["suggested_low"], "high": calib["suggested_high"],
             "auc": calib["auc"], "mode": "synthetic",
-            "source": "卡内样本自标定（core=正常 / negative=漂移）"}, warns
+            "source": "卡内样本自标定（core=正常 / negative=漂移）",
+            "weights": dict(DEFAULT_WEIGHTS), "prompt_version": None,
+            "card_fingerprint": None}, warns
 
 
 def cmd_check(args) -> int:
@@ -338,7 +353,58 @@ def cmd_check(args) -> int:
                 fh.write(json.dumps({**s, "_skipped": True}, ensure_ascii=False) + "\n")
         print(f"\n   已写出 JSONL：{args.jsonl}（可复算的中间产物，"
               f"de report 读它出报告）")
+
+    if getattr(args, "artifact", None):
+        _write_artifact(args.artifact, card=card, enc_name=enc_name,
+                        calib=calib, texts=texts, results=results)
+        print(f"   已写出判定产物：{args.artifact}"
+              f"（可被 de verify 或 POST /v1/verify 独立复算）")
     return 0
+
+
+def _write_artifact(path, *, card, enc_name, calib, texts, results) -> None:
+    """把这次判定装进**判定产物信封**（`verify.build_artifact`）。
+
+    为什么单列一个开关而不是塞进 `--jsonl`：两者不是一个东西。`--jsonl` 是
+    **逐条明细 + _meta**，`de report` 读它出报告；产物信封是**最小可复算溯源集**
+    （判定器版本 / 卡指纹 / 编码器 / 标定 / 判定器配置 / 输入与结果摘要），
+    契约由 `judgment-artifact.schema.json` 定死，第三方照它能自己复算。
+    把信封并进 JSONL 会让"报告输入"和"可复算证据"两种语义互相污染。
+
+    **不造溯源字段**：`weights_hash` 恒 None（`environment_fingerprint()`
+    未接入流程），卡指纹是这次实时算的——标定文件里若有就用标定文件的，
+    否则标 `backfilled`（补记的一致是弱证据，必须说出来）。
+    """
+    from .core.drift_detector import DriftDetector
+
+    det = DriftDetector(high=calib["high"], low=calib["low"], calibrated=True)
+    det_config = det.to_dict()["config"]
+
+    live_fp = card.fingerprint()
+    recorded_fp = calib.get("card_fingerprint")
+    art = build_artifact(
+        engine_version=_ENGINE_VERSION,
+        card=card,
+        encoder_info={"name": enc_name, "is_semantic": enc_name != "demo",
+                      "weights_hash": None, "library_versions": {},
+                      "notice": None},
+        calibration={
+            "mode": calib.get("mode"),
+            "low": calib.get("low"), "high": calib.get("high"),
+            "auc": calib.get("auc"), "source": calib.get("source"),
+            "weights": calib.get("weights"),
+            "card_fingerprint": recorded_fp or live_fp,
+            "card_fingerprint_status": ("recorded_at_calibration" if recorded_fp
+                                        else "backfilled"),
+        },
+        detector_config=det_config,
+        judgment={"texts": texts, "n_texts": len(texts), "stage": "cli"},
+        items=[{"index": r["i"], "score": r["score"],
+                "drift_level": r["level"], "suspect": r["suspect"]}
+               for r in results],
+    )
+    Path(path).write_text(json.dumps(art, ensure_ascii=False, indent=2),
+                          encoding="utf-8")
 
 
 # ---------------------------------------------------------------- de report
@@ -523,6 +589,9 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--calibration", help="标定产物 JSON；不给则用卡内样本自标定")
     b.add_argument("--encoder", choices=sorted(_ENCODERS), default="demo")
     b.add_argument("--jsonl", help="把可复算的中间产物写到该文件")
+    b.add_argument("--artifact",
+                   help="把本次判定写成**判定产物信封** JSON（最小可复算溯源集，"
+                        "供 de verify / POST /v1/verify 独立复算）")
     b.set_defaults(func=cmd_check)
 
     c = sub.add_parser("report", help="把 check 的 JSONL 渲染成可交付 HTML")

@@ -152,6 +152,65 @@ def test_report_html_carries_mandatory_disclaimers(card_path, workspace):
         assert must in html, f"报告缺少必需声明：{must}"
 
 
+def test_check_writes_a_recomputable_artifact(card_path, workspace):
+    """PRD §8.4 成功流的**前半段**：`de check` 必须能吐出判定产物信封。
+
+    没有这一步，"离线复算"就缺一个能喂给 `de verify` 的输入——PRD 里写的
+    `de verify --input r.jsonl` 没有任何一处实现（JSONL 是报告输入，不是
+    产物信封），这条测试把真正存在的那条路钉住。
+    """
+    a = workspace / "art_a.json"
+    rc = main(["check", "--card", str(card_path),
+               "--input", str(workspace / "in.txt"),
+               "--artifact", str(a)])
+    assert rc == 0 and a.is_file()
+    art = json.loads(a.read_text(encoding="utf-8"))
+
+    from direction_drift import __version__
+    from direction_drift.verify import ARTIFACT_SCHEMA_VERSION
+
+    assert art["artifact_schema_version"] == ARTIFACT_SCHEMA_VERSION
+    assert art["engine"]["version"] == __version__
+    assert art["card"]["fingerprint"] == ScenarioCard.from_file(
+        card_path).fingerprint()
+    assert art["judgment"]["texts_digest"].startswith("sha256:")
+    assert art["calibration"]["mode"] == "synthetic"      # 未给标定 → 自标定
+    # 实际生效的权重必须记进去：记 null 会让产物"天生不可复算"，而它是已知的
+    assert art["calibration"]["weights"], "自标定路径漏记了实际生效的权重"
+    # 补记的指纹必须是弱证据：状态写 backfilled，不许冒充标定当时记录的
+    assert art["calibration"]["card_fingerprint_status"] == "backfilled"
+
+
+def test_two_runs_of_check_verify_as_consistent(card_path, workspace):
+    """PRD §8.4 成功流的**后半段**：同卡同输入跑两遍，`de verify` 判一致（0）。
+
+    这是"可复算"唯一的端到端证明：不是"我们保证对"，而是**两次独立产出的
+    产物能被第三方逐条对齐**。
+    """
+    from direction_drift.verify import EXIT_CODES
+
+    # 必须给**正式标定**：合成标定（mode=synthetic）按契约刻意不可比——
+    # 用合成阈值去"验证判定"没有意义，复算内核会直接判 not_comparable。
+    fp = ScenarioCard.from_file(card_path).fingerprint()
+    calib = workspace / "calib.json"
+    calib.write_text(json.dumps({
+        "mode": "formal", "low": 0.10, "high": 0.30, "auc": 0.98,
+        "source": "测试夹具（不是真实标注，仅供链路验证）",
+        "weights": {"cone_alignment": 0.4, "constraint_satisfaction": 0.4,
+                    "negative_similarity": 0.2},
+        "prompt_version": "1.0", "card_fingerprint": fp,
+    }, ensure_ascii=False), encoding="utf-8")
+
+    a, b = workspace / "a.json", workspace / "b.json"
+    for out in (a, b):
+        assert main(["check", "--card", str(card_path),
+                     "--input", str(workspace / "in.txt"),
+                     "--calibration", str(calib),
+                     "--artifact", str(out)]) == 0
+    rc = main(["verify", "--a", str(a), "--b", str(b)])
+    assert rc == EXIT_CODES["consistent"] == 0
+
+
 def test_report_requires_meta_line(card_path, workspace):
     bad = workspace / "bad.jsonl"
     bad.write_text('{"i": 0, "text": "x", "score": 0.5}\n', encoding="utf-8")

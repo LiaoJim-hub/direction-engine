@@ -21,7 +21,8 @@ from direction_drift import card_page
 from direction_drift.verify import (ARTIFACT_SCHEMA_VERSION, EXIT_CODES,
                                     FINGERPRINT_LEVELS, LEVEL_TO_CHECK_STATUS,
                                     VERDICTS, build_artifact, compare_artifacts,
-                                    fingerprint_line, split_fingerprint)
+                                    fingerprint_line, results_digest,
+                                    split_fingerprint, texts_digest)
 
 # provenance 层允许的状态闭集（契约 openapi-verify.yaml 的 Check 组合矩阵）
 _PROVENANCE_STATUSES = {"equal", "differ", "missing", "algo_mismatch", "skipped"}
@@ -320,3 +321,112 @@ def test_build_artifact_is_minimal_and_has_no_none_fingerprint_parts():
     assert art["card"]["fingerprint_algo"] == "c2"
     assert art["card"]["fingerprint_digest"] == "55be644d4c446514"
     assert art["engine"]["version"] == "2.5.0"
+
+
+# ------------------------------------------------------------ 规范摘要（2.5.1）
+
+
+def test_texts_digest_matches_contract_canonical_form():
+    """规范形式照契约逐字实现：手写一遍期望值，不用被测函数自己算。
+
+    用被测函数算期望值 = 恒等式式断言（本项目最贵的一类假通过）：那样测的
+    是"我的复现对不对"，不是"实现符不符合契约"。
+    """
+    import hashlib
+    import json
+
+    texts = ["你可以先告诉我目的地吗？", "好的"]
+    expected = "sha256:" + hashlib.sha256(
+        json.dumps(texts, ensure_ascii=False, separators=(",", ":"))
+        .encode("utf-8")).hexdigest()
+    got = texts_digest(texts)
+    assert got == expected
+    assert got.startswith("sha256:") and len(got) == 7 + 64
+
+
+def test_texts_digest_is_order_sensitive_and_prefix_stable():
+    """顺序敏感：文本流是有序的，重排即另一段流。"""
+    assert texts_digest(["甲", "乙"]) != texts_digest(["乙", "甲"])
+    assert texts_digest([]).startswith("sha256:")      # 空流也有确定摘要
+
+
+def test_results_digest_rounds_score_and_is_key_order_insensitive():
+    """score 取 6 位小数（浮点尾差不得造出假不一致），键顺序不影响摘要。"""
+    # 键顺序不同 → 摘要相同（sort_keys=True）
+    a = [{"score": 0.100000, "drift_level": "normal", "suspect": False}]
+    b = [{"suspect": False, "drift_level": "normal", "score": 0.100000}]
+    assert results_digest(a) == results_digest(b)
+    # 第 7 位起的尾差必须被 6 位取整吃掉：0.123456789 → 0.123457
+    assert results_digest([{"score": 0.123456789}]) == \
+        results_digest([{"score": 0.123457}]), "6 位取整未生效"
+    # 但第 6 位真的不同时，摘要必须变——取整不是把差异抹平
+    assert results_digest([{"score": 0.123456}]) != \
+        results_digest([{"score": 0.123457}])
+
+
+def test_results_digest_empty_is_none_not_a_digest_of_nothing():
+    """空列表 → null（契约允许，语义是"退化为逐条比对"）。
+
+    给一个"空数组的摘要"会让两侧都没判看起来像"判出了同样的空结果"。
+    """
+    assert results_digest([]) is None
+    assert results_digest(None) is None
+
+
+def test_build_artifact_fills_digests_but_never_overwrites():
+    """能算就算；调用方自带的值**不覆写**——自带即声明"我按自己的口径算过"。"""
+    class _Card:
+        card_id = "c1"
+
+        def fingerprint(self):
+            return "c2:55be644d4c446514"
+
+    art = build_artifact(
+        engine_version="2.5.0", card=_Card(),
+        encoder_info={"name": "demo"},
+        judgment={"texts": ["甲"], "n_texts": 1},
+        items=[{"index": 0, "score": 0.1, "drift_level": "normal",
+                "suspect": False}])
+    assert art["judgment"]["texts_digest"] == texts_digest(["甲"])
+    assert art["judgment"]["results_digest"] == results_digest(art["items"])
+
+    art2 = build_artifact(engine_version="2.5.0", card=_Card(),
+                          encoder_info={"name": "demo"},
+                          judgment={"texts": ["甲"], "texts_digest": "sha256:x",
+                                    "results_digest": "sha256:y"},
+                          items=[{"index": 0, "score": 0.1}])
+    assert art2["judgment"]["texts_digest"] == "sha256:x"
+    assert art2["judgment"]["results_digest"] == "sha256:y"
+
+
+def test_recomputed_artifact_is_comparable_to_the_original():
+    """replay 的闭环：服务端重算出的产物，必须能过第一层可比性。
+
+    这条守的是 2.5.1 加摘要的**直接动因**——若重算产物缺 `texts_digest`，
+    `compare_artifacts` 的 numeric 层会把它读成"输入不同、条目无法对齐"，
+    那份不一致是摘要缺失造出来的假警报，不是真的判定差异。
+    """
+    class _Card:
+        card_id = "c1"
+
+        def fingerprint(self):
+            return "c2:55be644d4c446514"
+
+    texts = ["甲", "乙", "丙"]
+    items = [{"index": i, "score": 0.1 + i * 0.01,
+              "drift_level": "normal", "suspect": False} for i in range(3)]
+
+    def _build():
+        return build_artifact(
+            engine_version="2.5.0", card=_Card(),
+            encoder_info={"name": "BAAI/bge-small-zh-v1.5",
+                          "weights_hash": None},
+            calibration={"mode": "formal", "weights": {"cone": 0.4},
+                         "card_fingerprint": "c2:55be644d4c446514"},
+            detector_config={"window": 5, "high": 0.132, "low": 0.125},
+            judgment={"texts": texts, "n_texts": len(texts)},
+            items=items)
+
+    out = compare_artifacts(_build(), _build())
+    assert out["verdict"] == "consistent", [
+        c for c in out["checks"] if c["status"] != "equal"]

@@ -34,7 +34,7 @@ numpy / pydantic / scikit-learn / jieba；`[sbert]`、`[api]`、`[llm]`、`[dev]
 
 ```bash
 pip install -e .            # 核心依赖仅 numpy/pydantic/scikit-learn/jieba
-pytest                      # 357 项测试全离线通过（v2.5.0 实测）
+pytest                      # 365 项测试全离线通过（v2.5.1 实测）
 python examples/demo.py     # 一条命令跑通 建锥→标定→检测→通道信号
 python examples/demo.py roleplay_companion_v1   # 换一张卡再跑
 ```
@@ -101,10 +101,15 @@ cone = card.build_cone(Encoder().encode)
 ```bash
 pip install -e .                # 安装后得到 `de`；未安装可用 `python -m direction_drift`
 de init   --card-id my-card --goal "客服助手" --core-file core.txt --out my_card.json
-de check  --card my_card.json --calibration my_calib.json --input outputs.txt --out r.jsonl
-de report --input r.jsonl --out report.html
+de check  --card my_card.json --calibration my_calib.json --input outputs.txt \
+          --jsonl r.jsonl --artifact r.artifact.json
+de report --from r.jsonl --out report.html
+de verify --a r.artifact.json --b 另一台机器跑出的产物.json   # 复算：0=一致 / 2=不可比
 de card   --card my_card.json --out card.html        # 把卡摊开给人看（只读、不判定）
 ```
+
+`--jsonl` 是报告输入，`--artifact` 才是**可复算的判定产物信封**——`de verify`
+与托管服务 `POST /v1/verify` 吃的都是后者。
 
 四条命令的**自我约束与引擎同源**，不是命令行礼貌：`de init` **不生成正类样本**
 （用 LLM 挑"正确方向"再拿它判定，测出来的是"与模型自身偏好的偏离"，而不是
@@ -287,7 +292,7 @@ no_data("order_db")      # L5：输出"无数据"，不编造
 
 ## 版本沿革
 
-当前版本 **v2.5.0**（2026-10-02）。完整沿革、每条变更的理由、以及宪法修订记录，
+当前版本 **v2.5.1**（2026-10-02）。完整沿革、每条变更的理由、以及宪法修订记录，
 统一维护在 [`CHANGELOG.md`](CHANGELOG.md)——README 不再重复一份，避免两处失真。
 （版本指针与上面的测试数都由 `tests/test_docs_consistency.py` 断言，不会再悄悄落后。）
 

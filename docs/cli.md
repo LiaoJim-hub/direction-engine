@@ -16,7 +16,7 @@ python -m direction_drift --help
 
 ---
 
-## 四条命令
+## 五条命令
 
 ### `de init` —— 四问建卡
 
@@ -61,10 +61,18 @@ AUC 只作健康检查（>0.7）、不构成性能估计。
 de check --card card.json --input outputs.txt --jsonl result.jsonl
 de check --card card.json --input outputs.txt --calibration calib.json
 de check --card card.json --input outputs.txt --encoder sbert
+# 把这一判定写成**判定产物信封**（可复算溯源集，喂给 de verify）
+de check --card card.json --input outputs.txt --calibration calib.json \
+         --artifact artifact.json
 ```
 
 输入是**一行一条**的纯文本（`#` 开头与空行忽略）。
 输出是控制台表格 + 可选的 JSONL（`--jsonl`），后者可复算、可交接。
+
+`--jsonl` 与 `--artifact` 是**两样东西**，别合并：前者是"逐条明细 + `_meta`"，
+`de report` 读它出报告；后者是契约 `judgment-artifact.schema.json` 定义的
+**最小可复算溯源集**（判定器版本 / 卡指纹 / 编码器 / 标定 / 判定器配置 /
+输入与结果摘要），第三方只凭它就能自己复算。
 
 **两列可以不一致，这是设计不是缺陷：**
 
@@ -110,6 +118,48 @@ JSON 卡不是给人读的。`de card` 把一张卡**摊开**：方向定义、�
 
 渲染逻辑在 `direction_drift/card_page.py`，同样接受等价字典——
 把卡常量内嵌在脚本里的调用方（不建 JSON 卡的检测页）也能复用同一份实现。
+
+### `de verify` —— 复算比对（离线、零依赖）
+
+```bash
+de check --card card.json --input outputs.txt --calibration calib.json --artifact a.json
+# 在另一台机器 / 另一个环境里再跑一遍，得到 b.json
+de verify --a a.json --b b.json
+de verify --a a.json --b b.json --tolerance 0.01 --json report.json
+```
+
+**模式 A（A/B 比对）零依赖**：只读 JSON 与引擎的纯函数，**不加载编码器**，
+可在无网络、无模型的机器上跑——"可独立复算"的前提是验证方不必拥有与你相同的环境。
+
+比对是**三层**，顺序不能反：**先判可比性**（判定器版本 / 卡指纹算法 / 编码器 /
+标定性质的条件是否同一套），再判同源性（卡有没有变），最后才比数值。
+先比值会把"换了引擎版本"误报成"回归"。
+
+**退出码是机械面结论，脚本按它分支：**
+
+| 码 | verdict | 含义 |
+|---|---|---|
+| 0 | `consistent` | 一致 |
+| 1 | `mismatch` | 真不一致 |
+| 2 | `not_comparable` | **不可比——不是失败**，是"条件不同、结论不可对话" |
+| 3 | `input_error` | 输入错误 |
+| 4 | `env_unavailable` | 无法复算 |
+
+`2` 与 `1` 的区别是这条命令存在的理由：CI 若把 "2" 当失败，会把一次正常的
+引擎升级报成回归。
+
+两条诚实纪律：
+
+- **`--tolerance` 是显式参数，不是内置常量。** 实测残差从 0.0005 到 0.0111 分布
+  很宽，任何单一内置阈值都会在某一张卡上误判。报告必须列出**逐条残差**与
+  `max_abs_delta`——只给通过/不通过，等于把决定权从人手里拿走。
+- **`encoder.weights_hash` 为 null 时，报告只写"卡同源已证；分数可复现**未证**"**，
+  不写"复算成功"。权重文件哈希是环境指纹，它不可得时"分数能算回来"这件事
+  根本没有证据。
+
+**模式 B（`--replay` 就地复算）本版未实现**，直说，不静默降级：它需要加载编码器
+重放整条判定链，做成半成品等于让人以为自己在复算。服务端形态见托管仓
+`POST /v1/verify`（`replay=true`）。
 
 ---
 
