@@ -43,6 +43,50 @@ def test_changelog_has_entry_for_current_version():
     assert f"[{__version__}]" in changelog, f"CHANGELOG 缺少 {__version__} 条目"
 
 
+def test_citation_metadata_matches_code_and_changelog():
+    """CITATION.cff 的 version / date-released 必须与代码和沿革一致。
+
+    **这条守卫此前不存在，代价是实测出来的**：v2.4.0 的另外四处版本号
+    （pyproject.toml / `__init__.py` / README 指针 / CHANGELOG 条目）都有测试守着，
+    唯独 CITATION.cff 没有——于是它停在 2.3.7、date-released 停在 2026-09-30，
+    而 34 条守卫全绿。v2.3.7 发布说明里那句「五处版本号联动」是靠**纪律**维持的，
+    不是断言。CITATION.cff 是 GitHub「Cite this repository」与归档元数据的读数处：
+    写错版本号不会报错、不会崩、不会有任何一处喊，只会让引用者对着一份版本号
+    错误的快照引用。
+
+    **两处刻意的写法**（都是为了让断言真能失败）：
+
+    1. 不写成 `f"version: {__version__}" in text`——文件里另有一行
+       `cff-version: 1.2.0`，行内子串判定会被它命中：若包版本恰为 1.2.0，
+       守卫会踩着 `cff-version` 行通过。故用行锚定正则取**顶层**字段，
+       且要求恰好命中一处，取不到即失败——探针失明与「版本是对的」是两件事。
+    2. `date-released` 不自己算、也不与「今天」比，而是与 **CHANGELOG 条目日期**
+       比：CHANGELOG 是本项目版本沿革的唯一权威（见其文件头声明），日期同理
+       只该有一个来源。与「今天」比会随时间自然变红，那种守卫早晚被人删掉。
+    """
+    text = (ROOT / "CITATION.cff").read_text(encoding="utf-8")
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+
+    m = re.findall(r"^version:\s*(\S+)\s*$", text, re.MULTILINE)
+    assert len(m) == 1, (
+        f"CITATION.cff 顶层 version 字段应恰好一处，实测 {len(m)} 处"
+        "——读不到就判定不了，判定不了即失败，不当作通过")
+    assert m[0].strip('"') == __version__, (
+        f"CITATION.cff 写着 version: {m[0]}，代码是 {__version__}")
+
+    d = re.findall(r'^date-released:\s*"?(\d{4}-\d{2}-\d{2})"?\s*$',
+                   text, re.MULTILINE)
+    assert len(d) == 1, (
+        f"CITATION.cff 顶层 date-released 字段应恰好一处，实测 {len(d)} 处")
+    c = re.search(rf"^##\s*\[{re.escape(__version__)}\]\s*-\s*"
+                  r"(\d{4}-\d{2}-\d{2})", changelog, re.MULTILINE)
+    assert c, (f"CHANGELOG 找不到 [{__version__}] 条目的日期"
+               "（约定格式：## [X.Y.Z] - YYYY-MM-DD）")
+    assert d[0] == c.group(1), (
+        f"CITATION.cff 的 date-released 是 {d[0]}，而 CHANGELOG 的 "
+        f"[{__version__}] 条目写 {c.group(1)}——日期只该有一个来源")
+
+
 @pytest.mark.parametrize("doc", DOCS)
 def test_doc_has_no_broken_relative_links(doc):
     path = ROOT / doc
