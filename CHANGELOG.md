@@ -7,6 +7,141 @@
 场景卡与标定数据不在本仓，它们的版本另由标定文件的 `prompt_version` 绑定
 （改版后必须复检——见 CONSTITUTION.md 第三节"标定诚实性"）。
 
+## [2.4.0] - 2026-10-01
+
+**新增场景卡指纹与 `de` 命令行。**
+
+场景卡指纹让「阈值与这张卡是否同源」从一句假设变成一件可检测的事实。
+
+### 新增
+
+- **`scenario.card_fingerprint()` 与 `ScenarioCard.fingerprint()`**——场景卡的规范化
+  指纹（SHA-256 前 16 位，前缀由 `FINGERPRINT_VERSION` 标注算法版本）。
+  存在理由：标定产物绑定了编码器 / 权重 / 提示词版本，**唯独没绑卡本身**，
+  而阈值是「卡 + 数据」共同作用的产物——卡一改，原阈值失效，标定文件却不报警、
+  仍自称正式标定。指纹覆盖**一切参与判定的字段**（样本三族 / 约束 / 规则层 /
+  长度保护 / 格式白名单 / 卡 id 与目标），**刻意不含 `prompt_version`**（那是标定侧
+  的输入，混进来会让「只改了版本」与「改了卡」无法区分）；样本族在哈希前
+  **递归规范化**——定轴取均值、锥形取分位数都与顺序无关，否则"仅重排"会被
+  误报成改卡。
+- **`calibration.record`**：`build_calibration_record()`（标定产物组装）、
+  `validate_calibration_record()`（自校验）、`environment_fingerprint()`（结构占位）。
+  补的是一个此前**完全不存在**的环节：在此之前**没有任何脚本会写
+  `*_calibration.json`**（`grep json.dump` 只命中运行态统计与巡检状态，`CALIB_FILE`
+  只有读没有写），两份正式标定的元信息层**全部手写**——这也是 `encoder_name` /
+  `weights` / `prompt_version` 三个参数虽早已存在（`roc.py:13-15`）却**两处调用点
+  一个都没传**的原因。有了产出脚本，`card_fingerprint` 才能是
+  `recorded_at_calibration`（标定当场记录）而非 `backfilled`（事后补记）——
+  两者不是措辞差别：前者说明"阈值就是针对这张卡算的"，后者只说明"自补记以来
+  本卡未变"。
+- **`docs/scenario-card.md`**：卡结构、卡指纹、标定产物契约的公开文档（此前
+  公开文档全库零匹配）。
+- **`de` 命令行**（安装后为 `de`，未安装可 `python -m direction_drift`）——
+  `de init`（四问建卡 → 输出场景卡 JSON）/ `de check`（对一批输出跑检测 →
+  表格 + JSONL）/ `de report`（把 JSONL 渲染成可交付 HTML）/ `de card`
+  （把一张卡摊开给人看：样本族 / 规则层 / 约束 / 卡指纹；只读、不评价、不判定）。
+  三条**自我约束与引擎同源**（不是命令行礼貌）：**不生成正类样本**——
+  用 LLM 挑出"正确方向"再拿它判定，测出来的是"与模型自身偏好的偏离"，
+  而不是"与场景真实方向的偏离"（需要冷启动合成时请显式用
+  `examples/build_cone.py`，并接受其 AUC 只作健康检查）；**未标定不判定且必须
+  显形**——无 `--calibration` 时用卡内样本自标定，标定性质为 `synthetic`，
+  分数**仅供观察**，这条会原样写进 JSONL 与报告；**跳过项要计数**——
+  空输出 / 过短输入 / 零向量不产生分数。用法见 `docs/cli.md`。
+- **测试数守卫**（`tests/test_docs_consistency.py::test_readme_test_count_matches_collected`）
+  ——README 声明的测试数改为由测试断言。这个数字手工维护过
+  205 → 207 → 226 → 235 → 273 → 301……每次都滞后，而它印在**快速开始**第三条
+  命令上，滞后就等于门面撒谎。守卫在子进程里真跑一次全量收集再比对，而不是读
+  `request.session.items`——后者只反映**这一次调用**（跑单文件时是子集），与
+  README 的说法不是同一件事。两条设计约束写进了注释：`-o addopts=` 必须显式给
+  （否则 `addopts = "-q"` 与传入的 `-q` 叠成 `-qq`，摘要行整行消失，守卫会
+  「看不到数字」而不是「发现不一致」）；收集失败 / 没有摘要行 / 收到 0 条一律
+  **抛错**，绝不当作通过——探针失明与「README 是对的」是两件事。
+- **文本完整性守卫**（`tests/test_text_integrity.py`）——全仓文本文件不得含控制
+  字符。起因是上面那处 29 行损坏：它静默、合法、能提交，没有任何自动化会喊。
+  守卫同时含一条探针自检（扫到的文件数少于 50 就失败）——**否则后缀集写错一个
+  字母，或 ROOT 算错一层，守卫会永远绿着通过，而"未被检出的原因是被检对象为
+  空"**。判别力实测：把历史损坏版换回去，守卫逐行报出全部 24 行。
+
+### 变更
+
+- **`card_fingerprint_status` 改为闭集 + 必填**（
+  `record.CARD_FINGERPRINT_STATUSES = ("recorded_at_calibration", "backfilled",
+  "missing")`）。理由与 `mode` 相同，但更硬：这个字段已有**三个消费端按字面值
+  分支**——`calib_meta.py`、`card_page.py`、`inspect_cycle.py`——写错一个字母
+  （`recorded_at_calibraton`）不会报错，只会三处**同时**掉进 else，把「标定当场
+  记录」读成「没有来源信息」。静默降级，且没有任何一处会喊；唯一来得及拦的
+  地方是产出口。同时它**不接受调用方指定**（由「有没有指纹」推出）——否则脚本
+  可以自报 `recorded_at_calibration`，而那恰是它唯一能提供的证据本身。
+  判别力实测：三组变异（关掉闭集校验 / 字段不再必填 / 放开调用方指定）分别
+  被 6 / 1 / 1 条用例逮住。
+
+- **`ScenarioCard` / `RulePattern` 改 `extra="forbid"`**（此前是 pydantic 默认的
+  `ignore`）。实测代价：把 `rule_layer` 写成 `rule_layers` 会被**静默丢弃**，
+  加载成功、建锥成功、指纹照算，而 `rule_hit()` 静默返回 `None`——这张卡少了
+  一整层检测能力，从外面一点异常都看不出来。声明式数据最危险的不是报错，
+  是「看起来对」。
+- **`ScenarioCard` 新增 `notes` 字段**（元信息显式收编）；`constraints` 的结构化
+  声明开始拒绝未知键——`actions` 拼错一个字母就会让该约束**静默退回启发式猜
+  动作词**，同样从外面看不出异常。
+- 示例卡 `roleplay_companion_v1.json` 的 `constraints_note` 并入 `notes`
+  （**指纹逐位不变**，实测 `c2:a7aa7482aed3c841`）。
+
+### 修复
+
+- **`docs/scenario-card.md` 的 29 处内容丢失**。该文件生成时，所有被引号标注的
+  术语内容整体变成一个 `U+0001`（SOH）——29 处、24 行，连 H3 标题里的
+  `extra="forbid"` 都只剩 `extra=""`。**这次损坏没有任何一处会喊**：文件仍是
+  合法 UTF-8（U+0001 是合法码点，不是解码错误），Markdown 照样渲染，
+  `git diff` 里就是一行普通中文改动。发现它靠的是人工逐码点统计。
+  已按上下文逐条修复；其中 5 处有仓库内**逐字出处**（`scenario.py:237-238`、
+  `scenario.py:177`、`calibration/record.py:38`、`record.py:130`、
+  `test_card_fingerprint.py:242`），其余为按上下文推断——**是修复，不是原文复原**。
+  同时立 `tests/test_text_integrity.py`（见下）。
+- **指纹规范化改为递归**：原先 `json.dumps(sort_keys=True)` 只排 dict 的键、不排
+  list，于是 `{"actions": ["a","b"]}` 与 `{"actions": ["b","a"]}` 会算出不同指纹，
+  而 `constraint_checker` 是逐词 `find()`、判定行为完全相同。
+- **等价值归一**：`format_whitelist` 的 `None` 与 `""` 判定完全等价
+  （`_whitelist()` 用 `or` 兜底，两者同为 falsy），指纹里折为同一值。
+  修这两处必然带出 `FINGERPRINT_VERSION: c1 → c2`——**改规范化规则就是改算法**，
+  不显形版本的话，「我们换了算法」与「这些卡都被改过」在只比较字符串时完全同形。
+  （副产品：c1→c2 之后，现有两张卡的 digest **逐位不变**，恰好正面说明
+  「算法版本」与「卡内容」是两件独立的事。）
+
+- **`KNOWN_CONSTRAINT_KEYS` 漏了两个键**（`hypothesis_violation` 与 `constraint`）。
+  这是本版**自己引入的回归**：那份键白名单首版是**手抄**的，只覆盖了示例卡用到的
+  四个键；而 `constraint_checker` 实际还会读 `hypothesis_violation`（v2.3.4 起
+  正式支持、有专门回归测试）与 `constraint`（`text` 的别名）。后果是
+  **用这两个键的卡直接加载失败**，而本仓测试全绿——示例卡恰好没用到它们。
+  发现途径是**托管仓**：它有 30 条用例报 `ValidationError`（demo 卡正好用了
+  `hypothesis_violation`）；而在那之前托管仓连测试都跑不起来，因为 venv 里
+  editable 安装的路径映射指向搬家前的旧位置。
+  修法不只是补两个键，而是**把清单交给测试**：
+  `tests/test_constraint_layer.py::test_known_constraint_keys_cover_every_exec_read_site`
+  从执行层源码的读取点提取键、再断言白名单覆盖它。
+  **手抄的清单一定会过期**——这一条与外部挑刺报告的 2-4 同类：同一个字段被
+  两种实现解释，两边不一致、且不报错。变异实测：删任一个键、或还原成那版四键，
+  该守卫均红（脚本与判据见本版"说明"）。
+
+### 说明
+
+- 本版为 **2.4.0**（新增公开 API = minor）。**不重打已发布的 v2.3.7 tag**——
+  归档快照不动。
+- 卡指纹只覆盖**卡的数据**，**不覆盖环境**（编码器实现 / 权重文件 /
+  `sentence-transformers` `transformers` `torch` 的版本），所以
+  **「指纹一致 ≠ 分数可复现」**。实证：同方法同机器下复算，一张卡残差 0.0005、
+  另一张 0.0111，差 20 倍而当时没有任何字段能解释。环境指纹本版只提供结构与
+  这条边界声明，字段设计留待定稿。
+- **三仓搬过家（2026-10-01）**：公开仓 / 私有运营 / 托管服务从
+  `工程化落地\<仓>` 一起下移到 `工程化落地\方向引擎工程商业\<仓>`。
+  移动打断了三处**写死的路径**——两个探针脚本里的绝对路径、运营仓 README 的
+  `cd` 示例、以及开发机 venv 里两个 editable 安装的路径映射。修法统一为
+  「从 `__file__` 向上定位」，并补了两道守卫：本仓禁止写死带盘符的路径
+  （`tests/test_text_integrity.py`），运营仓守「三仓同父 + 引擎副本逐位一致」
+  （`test_artifact_integrity.py`）。
+  **对使用者的影响**：若你此前 `pip install -e .` 装过本仓，搬家/改目录后需要
+  **重装一次**——editable 的路径映射写的是绝对路径，pip 不会自己更新；
+  普通（非 editable）安装不受影响。
+
 ## [2.3.7] - 2026-09-30
 
 **无代码变更的补丁版本：更正一处数字口径，补上软件归档元数据。**

@@ -34,7 +34,7 @@ numpy / pydantic / scikit-learn / jieba；`[sbert]`、`[api]`、`[llm]`、`[dev]
 
 ```bash
 pip install -e .            # 核心依赖仅 numpy/pydantic/scikit-learn/jieba
-pytest                      # 207 项测试全离线通过（v2.3.7 实测）
+pytest                      # 320 项测试全离线通过（v2.4.0 实测）
 python examples/demo.py     # 一条命令跑通 建锥→标定→检测→通道信号
 python examples/demo.py roleplay_companion_v1   # 换一张卡再跑
 ```
@@ -96,7 +96,22 @@ cone = card.build_cone(Encoder().encode)
 完整可运行版本：[`examples/demo.py`](examples/demo.py)（50 行）。
 卡的字段与"建卡四问"的对应关系见 [`examples/README.md`](examples/README.md)。
 
-**路径 B：场景卡 + 检测循环**（推荐先跑 `examples/demo.py`）
+**路径 B：命令行 `de`**（装了就能用，不必写代码）
+
+```bash
+pip install -e .                # 安装后得到 `de`；未安装可用 `python -m direction_drift`
+de init   --card-id my-card --goal "客服助手" --core-file core.txt --out my_card.json
+de check  --card my_card.json --calibration my_calib.json --input outputs.txt --out r.jsonl
+de report --input r.jsonl --out report.html
+de card   --card my_card.json --out card.html        # 把卡摊开给人看（只读、不判定）
+```
+
+四条命令的**自我约束与引擎同源**，不是命令行礼貌：`de init` **不生成正类样本**
+（用 LLM 挑"正确方向"再拿它判定，测出来的是"与模型自身偏好的偏离"，而不是
+"与场景真实方向的偏离"）；`de check` **未标定不判定且必须显形**（无
+`--calibration` 时走卡内样本自标定，性质为 `synthetic`，分数仅供观察，这条会
+原样写进 JSONL 与报告）；**跳过项要计数**（空输出 / 过短输入 / 零向量不产生分数）。
+完整用法见 [`docs/cli.md`](docs/cli.md)。
 
 **路径 C：HTTP API**（给外部 Agent/应用调用）
 
@@ -272,9 +287,9 @@ no_data("order_db")      # L5：输出"无数据"，不编造
 
 ## 版本沿革
 
-当前版本 **v2.3.7**（2026-09-30）。完整沿革、每条变更的理由、以及宪法修订记录，
+当前版本 **v2.4.0**（2026-10-01）。完整沿革、每条变更的理由、以及宪法修订记录，
 统一维护在 [`CHANGELOG.md`](CHANGELOG.md)——README 不再重复一份，避免两处失真。
-（版本指针由 `tests/test_docs_consistency.py` 断言，不会再悄悄落后。）
+（版本指针与上面的测试数都由 `tests/test_docs_consistency.py` 断言，不会再悄悄落后。）
 
 ## 项目定位与哲学
 

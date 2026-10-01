@@ -10,12 +10,13 @@
 让其中任何一句重新漏判，测试就会红。
 """
 import json
+import re
 from pathlib import Path
 
 import pytest
 
 from direction_drift.core.constraint_checker import ConstraintChecker
-from direction_drift.scenario import ScenarioCard
+from direction_drift.scenario import KNOWN_CONSTRAINT_KEYS, ScenarioCard
 
 CARDS = Path(__file__).resolve().parents[1] / "examples" / "cards"
 
@@ -116,14 +117,20 @@ def test_free_text_form_known_limitation_is_pinned(checker):
 
 
 def test_all_example_cards_load_with_structured_constraints():
-    """三张示例卡都要能被 pydantic 接受（结构化约束是 dict，不是 str）。"""
+    """示例卡目录里每张卡都要能被 pydantic 接受并序列化。
+
+    不冻结总数（2026-10-01）：目录里的卡会随示例增加（真实卡 diejian/xunludie
+    已加入）。守的是"每张都能加载 + 三张合成示例卡必须在"，不是"恰好几张"——
+    硬编码总数会让每次加卡都红，而红的原因与卡片质量无关。
+    """
     ids = []
     for p in sorted(CARDS.glob("*.json")):
         card = ScenarioCard.from_file(p)
         ids.append(card.card_id)
         assert card.core_samples and card.goal
         json.dumps(card.model_dump(), ensure_ascii=False)   # 可序列化
-    assert len(ids) == 3
+    assert {"travel-concierge-v1", "coding-assistant-v1",
+            "roleplay-companion-v1"} <= set(ids)
 
 
 def test_travel_card_default_constraint_is_structured():
@@ -179,3 +186,80 @@ def test_free_text_heuristic_still_reports_ok_when_it_really_checked(checker):
     r = checker.check("先按主题分组，顺序等你确认。", ["不直接推荐具体酒店"])
     assert r["satisfaction"] == 0.0
     assert r["violations"] == [], "启发式查过且未命中 → ok，不进列表"
+
+
+# --------------------------------------------------------------------------
+# 键契约：`KNOWN_CONSTRAINT_KEYS` 必须覆盖消费端**真实读取**的每一个键
+# --------------------------------------------------------------------------
+# 2026-10-01 实做记录：首版 `KNOWN_CONSTRAINT_KEYS` 是**手抄**的，漏了两个键——
+#   · `hypothesis_violation`（引擎正式支持，v2.3.4 起有专门回归测试）
+#   · `constraint`（`text` 的别名，`ConstraintChecker.text_of` 会读）
+# 后果：**托管仓 30 条测试报 ValidationError**（它的 demo 卡正好用了
+# `hypothesis_violation`），而本仓测试全绿——因为示例卡恰好只用那 4 个键。
+# 这与《挑刺报告》2-4 是同一类：同一个字段被两种实现解释，两边不一致且不报错。
+#
+# **手抄的清单一定会过期。** 所以这里不重抄，而是从消费端源码的读取点提取，
+# 再断言白名单覆盖它。
+_DRIFT_ROOT = Path(__file__).resolve().parents[1] / "direction_drift"
+
+# (相对路径, 约束字典在该文件里的变量名) —— 只列**执行层**，理由见下
+_EXEC_READERS = [
+    ("core/constraint_checker.py", ("c", "constraint")),
+]
+# 展示层只作参考、**不参与断言**。理由有两个，都实测过：
+#   ① `card_page.py` 里变量 `c` 同名两用——第 401 行的 `c["card_id"]` 是**卡片**
+#      （`for c in cards`），第 220~228 行的 `c.get("actions")` 才是**约束**
+#      （`for c in structured`）。按变量名提取必然把 `card_id` 误当成约束键。
+#   ② 展示层是白名单的**下游**：键不在白名单里，卡根本构造不出来，
+#      轮不到它渲染。**契约由"谁会读它"定义，而执行层才是真正的读者。**
+_SHOWCASE_READERS = [("card_page.py", ("c",))]
+
+
+def _keys_read_by(rel, var_names):
+    """提取 `var.get("...")` / `var["..."]` 形式的键读取点。"""
+    src = (_DRIFT_ROOT / rel).read_text(encoding="utf-8")
+    names = "|".join(re.escape(v) for v in var_names)
+    pat = re.compile(rf"\b(?:{names})\s*(?:\.get\(\s*|\[\s*)['\"]([^'\"]+)['\"]")
+    return {m.group(1) for m in pat.finditer(src)}
+
+
+def test_known_constraint_keys_cover_every_exec_read_site():
+    """白名单必须覆盖**执行层**真实读取的每一个约束键。
+
+    漏一个，用该键的卡就直接加载失败（`ValidationError`），而**本仓测试不会红**
+    ——因为示例卡可能恰好没用到那个键。这正是上一版翻车的方式（漏了
+    `hypothesis_violation`，托管仓 30 条测试红、本仓全绿）。
+
+    **键清单不在这里手抄**——从消费端源码的读取点提取。手抄一份清单，
+    就是又造一个会过期的第二真源；而这一条守卫的全部意义就是不复犯那个错。
+    """
+    read = {rel: _keys_read_by(rel, vars_) for rel, vars_ in _EXEC_READERS}
+    total = sum(len(v) for v in read.values())
+
+    assert total >= 5, (
+        f"只从执行层提取到 {total} 个键（{read}）——先怀疑本测试的提取逻辑失效，"
+        f"而不是先庆祝。读取方式若换成了别的形态，本测试需要同步。")
+
+    missing = {k for keys in read.values() for k in keys} - set(KNOWN_CONSTRAINT_KEYS)
+    assert not missing, (
+        f"`KNOWN_CONSTRAINT_KEYS` 漏了执行层会读的键：{sorted(missing)}。"
+        f"用它们的卡会被键校验直接拦下（加载失败），而引擎明明会读它们。\n"
+        f"提取来源：" + "；".join(f"{rel} → {sorted(keys)}" for rel, keys in read.items())
+        + "\n（展示层参考读取点："
+        + "；".join(f"{rel} → {sorted(_keys_read_by(rel, v))}"
+                    for rel, v in _SHOWCASE_READERS) + "）")
+
+
+def test_every_known_constraint_key_is_actually_usable_on_a_card():
+    """正向对照：白名单里的每个键都必须能真的用在卡上。
+
+    防"白名单只增不减到离谱"——加一个没人读的键本身无害，但若它连卡都构造不出来，
+    那说明它写错了地方。
+    """
+    card = ScenarioCard(
+        card_id="keys-probe", goal="g",
+        core_samples=[f"s{i}" for i in range(20)],
+        constraints=[{k: "x" for k in sorted(KNOWN_CONSTRAINT_KEYS)}],
+    )
+    assert card.constraints, "约束没被保留"
+    assert set(card.constraints[0]) == set(KNOWN_CONSTRAINT_KEYS)

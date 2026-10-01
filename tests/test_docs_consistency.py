@@ -10,6 +10,8 @@
 """
 import pathlib
 import re
+import subprocess
+import sys
 
 import pytest
 
@@ -18,8 +20,8 @@ from direction_drift import __version__
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DOCS = ["README.md", "CHANGELOG.md", "CODE_OF_CONDUCT.md", "CONSTITUTION.md",
         "CONTRIBUTING.md", "SECURITY.md", "docs/philosophy.md",
-        "docs/persistence.md",
-        "docs/protention-proposal-review.md", "examples/README.md",
+        "docs/persistence.md", "docs/scenario-card.md",
+        "docs/protention-proposal-review.md", "docs/cli.md", "examples/README.md",
         ".github/PULL_REQUEST_TEMPLATE.md"]
 
 
@@ -62,3 +64,55 @@ def test_doc_code_fences_are_paired(doc):
         pytest.skip(f"{doc} 不存在")
     fences = path.read_text(encoding="utf-8").count("\n```")
     assert fences % 2 == 0, f"{doc} 代码围栏不配对（{fences} 个）"
+
+
+# --- 测试数守卫 --------------------------------------------------------------
+#
+# 起因：README「快速开始」第三条命令写着 `pytest  # N 项测试全离线通过`，
+# 而这个 N 一直是手工维护的：205 → 207 → 226 → 235 → 273 → 301……每一次改动的
+# 人要么忘了改、要么改晚一步。它出现在**门面上**，滞后就等于门面在撒谎。
+# 上面两条已经让版本号由测试守，测试数同理——不靠人记得。
+#
+# 判据只认一句：README 声明的数 = 真跑一次 `pytest` 会收集到的数。
+
+def _collect_full_suite_count() -> int:
+    """真实跑一次全量收集，返回用例总数。
+
+    刻意走子进程而不是读 `request.session.items`：README 声明的是「执行 `pytest`
+    会跑多少条」，而 session.items 反映的是**这一次调用**收集到多少——只跑单个
+    文件时它是个子集。两者不是同一件事，守卫不该把子集当全量。
+
+    另注意 `-o addopts=`：pyproject 里 `addopts = "-q"` 会与命令行传入的 `-q`
+    叠成 `-qq`，摘要行整行消失——守卫会「看不到数字」而不是「发现不一致」。
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q",
+         "-o", "addopts=", "-p", "no:cacheprovider"],
+        cwd=str(ROOT), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=600,
+    )
+    tail = proc.stdout[-2000:]
+    # 探针失明一律抛错，绝不当作通过：收集失败 / 无摘要行 / 收集到 0 条，
+    # 都只能说明「这次没测到东西」，不能说明「README 是对的」。
+    assert proc.returncode == 0, (
+        f"子进程收集失败，守卫无法判定（exit={proc.returncode}）：\n"
+        f"{tail}\n{proc.stderr[-2000:]}")
+    errors = re.search(r"collected,\s*(\d+)\s+errors?", proc.stdout)
+    assert not errors, f"收集期有 {errors.group(1)} 个错误：\n{tail}"
+    m = re.search(r"(\d+)\s+tests?\s+collected", proc.stdout)
+    assert m, f"子进程输出里找不到「N tests collected」摘要行——探针失明：\n{tail}"
+    n = int(m.group(1))
+    assert n > 0, "收集到 0 条用例——探针失明即失败，不当作通过。"
+    return n
+
+
+def test_readme_test_count_matches_collected():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    m = re.search(r"#\s*(\d+)\s*项测试", readme)
+    assert m, "README 找不到测试数（约定格式：`pytest  # N 项测试…`）"
+    claimed = int(m.group(1))
+    actual = _collect_full_suite_count()
+    assert claimed == actual, (
+        f"README 写着 {claimed} 项，实测 {actual} 项（差 {actual - claimed:+d}）。"
+        f"改了用例就顺手把 README 的 `# {actual} 项测试…` 改过来——"
+        "这个数字在门面上，滞后就是撒谎。")

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "direction-drift"
-version = "2.3.7"
+version = "2.4.0"
 description = "Direction Engine (direction-drift): a direction-drift detection engine for AI agents, a zero-dependency multi-node coexistence layer, and an output-provenance labelling layer for valid inference. It only surfaces, never auto-corrects - alerts belong to the engine, decisions belong to humans."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -49,6 +49,11 @@ Repository = "https://github.com/LiaoJim-hub/direction-engine"
 Documentation = "https://github.com/LiaoJim-hub/direction-engine#readme"
 Issues = "https://github.com/LiaoJim-hub/direction-engine/issues"
 Changelog = "https://github.com/LiaoJim-hub/direction-engine/blob/main/CHANGELOG.md"
+
+[project.scripts]
+# `de` —— 四问建卡 / 批量检测 / 出报告。用法与纪律见 docs/cli.md。
+# 不安装也可用：python -m direction_drift.cli（或 python -m direction_drift）
+de = "direction_drift.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["direction_drift*"]
