@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "direction-drift"
-version = "2.5.1"
+version = "2.5.2"
 description = "Direction Engine (direction-drift): a direction-drift detection engine for AI agents, a zero-dependency multi-node coexistence layer, and an output-provenance labelling layer for valid inference. It only surfaces, never auto-corrects - alerts belong to the engine, decisions belong to humans."
 readme = "README.md"
 requires-python = ">=3.10"

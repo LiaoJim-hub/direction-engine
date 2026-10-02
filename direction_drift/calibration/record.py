@@ -107,6 +107,21 @@ def build_calibration_record(*, calibration: Dict, mode: str,
     if not isinstance(calibration, dict):
         raise ValueError("calibration 应为 calibrate_thresholds 的返回值（dict）")
 
+    # 标定算不出阈值 → **不许落成产物**。此前 `roc` 达标不可得时静默回落 t=0.5，
+    # 那个 0.5 会一路写进 low 字段、被当成标定结果用下去。宁可在这里失败：
+    # 失败会逼人去查为什么（多半是样本分布重叠，得人工选点），假数字不会。
+    # 例外：调用方**显式**给了 low / high（人工选定操作点），那是另一种合法来源。
+    if low is None and calibration.get("suggested_low") is None:
+        raise ValueError(
+            "标定没能给出可用阈值：" + (calibration.get("reason")
+                                  or "suggested_low 为 None（未说明原因）")
+            + "。请用 scan_operating_points 人工选点后显式传入 low，"
+              "或调整样本/target_precision 重跑标定——不要写入一个回落出来的假阈值。")
+    if high is None and calibration.get("suggested_high") is None:
+        raise ValueError(
+            "标定没能给出警告带上界（suggested_high 为 None）。"
+            "请显式传入 high，或重跑标定。")
+
     record: Dict = {
         "created": created or date.today().isoformat(),
         "mode": mode,

@@ -7,6 +7,31 @@
 场景卡与标定数据不在本仓，它们的版本另由标定文件的 `prompt_version` 绑定
 （改版后必须复检——见 CONSTITUTION.md 第三节"标定诚实性"）。
 
+## [2.5.2] - 2026-10-02
+
+**两条"缺位被输出成正常值"的修复**（外部挑刺报告 v1.0 的 P0-2 / P1-6）。
+
+### 修复
+
+- **`verify.compare_artifacts`：两侧 items 皆空不再判 `consistent`。**
+  numeric 层写的是 `if items_a and items_b ... elif items_a or items_b ...`，
+  两侧皆空时两个分支都不成立 → 不追加任何 check → 落到 `consistent`、退出码 0。
+  于是"这两份产物确实一致"与"这次一条都没比"在输出上完全同形，而后者会让 CI
+  读成回归通过。**这不是假想**：window=5 只喂 3 条时 `judged=0` 是常态。
+  现按纪律判为 `not_comparable`（退出码 2）——不可比 ≠ 不一致。
+- **`roc.calibrate_thresholds`：达标不可得时不再静默回落 `t=0.5`。**
+  0.5 恰好落在两个默认阈值（0.4 / 0.6）中间，长得完全像标定出来的数字。现返回
+  `suggested_low=None` + `achievable=False` + `reason`，且 `build_calibration_record`
+  遇到它直接 `ValueError`（显式给了 low/high 的人工选点不受影响）。
+
+两条是同一形：**fallback 值伪装成测量值**。2.3.3 / 2.3.5 / 2.4.0 已修过三次同类，
+这次长在复算内核与标定器自己身上。
+
+### 测试
+
+- `tests/test_verify.py` +2（两侧皆空 → not_comparable；一侧空 → 仍 mismatch）
+- `tests/test_roc.py` +2（不回落假阈值；算不出阈值的标定不许落成产物）
+
 ## [2.5.0] - 2026-10-02
 
 **新增复算内核与 `de verify`。** 让「可验证」从一句承诺变成一条能跑的命令。

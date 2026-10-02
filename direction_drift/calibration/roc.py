@@ -38,6 +38,7 @@ def calibrate_thresholds(alignment_scores: List[float], labels: List[int],
     precision, recall, pr_thr = precision_recall_curve(labels, drift)
 
     valid = np.where(precision[:-1] >= target_precision)[0]
+    achievable, unachievable_reason = True, None
     if len(valid) > 0:
         # v2.2.1 修复：recall 随阈值降低单调不减，达标阈值并列时 argmax 会取到
         # 最大阈值（典型触发：反面样本 alignment 被截断为 0 → drift=1.0 并列），
@@ -47,7 +48,17 @@ def calibrate_thresholds(alignment_scores: List[float], labels: List[int],
         t = float(pr_thr[best])
         ap, ar = float(precision[best]), float(recall[best])
     else:
-        t, ap, ar = 0.5, None, None
+        # v2.5.2 修复：达标不可得时**不许回落到 0.5**。
+        # 0.5 落在两个默认阈值（0.4 / 0.6）正中间，长得完全像一个标定出来的数字，
+        # 于是"这次标定没算出阈值"会被读成"标定结果是 0.5"——这正是本项目反复堵的
+        # 那一形（fallback 值伪装成测量值）。宁可标定失败，也不给假的可用阈值：
+        # 失败了人会去查为什么，假数字会一路用下去。
+        t, ap, ar = None, None, None
+        achievable = False
+        unachievable_reason = (
+            f"没有任何阈值能达到目标准确率 {target_precision:g}"
+            f"（本次最好也只有 {float(precision[:-1].max()):.3f}）。"
+            "请用 scan_operating_points 人工选点，或放宽 target_precision。")
 
     # v2.2.1 补充：类间完全可分且分数被截断并列举（反面 alignment=0 → drift=1.0 撞顶）时，
     # PR 阈值会退化到端点（t=1.0 → low=0）。此时直接取两类 drift 的中点，最稳健。
@@ -58,6 +69,19 @@ def calibrate_thresholds(alignment_scores: List[float], labels: List[int],
         n_pred = int(pred.sum())
         ap = float(((pred & (labels == 1)).sum()) / n_pred) if n_pred else None
         ar = float(((pred & (labels == 1)).sum()) / int((labels == 1).sum()))
+        # 完全可分时中点必然达标，所以这一格是**真的算出来了**，不是回落
+        achievable, unachievable_reason = True, None
+
+    if not achievable:
+        # 阈值给不出来就**不给**，并把原因带出去（缺位必须显形）
+        return {"auc": auc, "suggested_low": None, "suggested_high": None,
+                "achievable": False, "reason": unachievable_reason,
+                "target_precision": target_precision,
+                "achieved_precision": None, "achieved_recall": None,
+                "n_samples": int(len(labels)),
+                "inputs": {"encoder": encoder_name,
+                           "weights": dict(weights) if weights else None,
+                           "prompt_version": prompt_version}}
 
     low = 1.0 - t                          # 对齐空间漂移边界
     # high = 正常类的低分位（v2.3.3，取代 low + 0.2）
@@ -70,6 +94,7 @@ def calibrate_thresholds(alignment_scores: List[float], labels: List[int],
     high = float(min(1.0, max(high_data, low)))     # 警告带永不为负宽度
     return {"auc": auc, "suggested_high": high, "suggested_low": low,
             "high_source": high_source,
+            "achievable": True, "reason": None,
             "target_precision": target_precision,
             "achieved_precision": ap, "achieved_recall": ar,
             "n_samples": int(len(labels)),

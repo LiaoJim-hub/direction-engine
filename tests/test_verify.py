@@ -430,3 +430,71 @@ def test_recomputed_artifact_is_comparable_to_the_original():
     out = compare_artifacts(_build(), _build())
     assert out["verdict"] == "consistent", [
         c for c in out["checks"] if c["status"] != "equal"]
+
+
+def test_two_empty_artifacts_are_not_comparable_not_consistent():
+    """两侧 items 皆空 → **不是** consistent。
+
+    这是本项目最不能犯的那一形，而它曾经长在测量器自己身上：`compare_artifacts`
+    的 numeric 层写的是 `if items_a and items_b ... elif items_a or items_b ...`，
+    两侧皆空时两个分支都不成立 → 不追加任何 check → 落到 `consistent`、退出码 0。
+
+    于是"这两份产物确实一致"与"这次一条都没比"在输出上完全同形，且后者会让 CI
+    读成回归通过。**这不是假想**：window=5 而只喂 3 条文本时 judged=0 是常态，
+    那样跑出来的两份产物正是两侧皆空。
+
+    按纪律，不可比 ≠ 不一致，所以这里既不是 consistent 也不是 mismatch。
+    """
+    class _Card:
+        card_id = "c1"
+
+        def fingerprint(self):
+            return "c2:55be644d4c446514"
+
+    texts = ["甲", "乙", "丙"]
+
+    def _build():
+        return build_artifact(
+            engine_version="2.5.1", card=_Card(),
+            encoder_info={"name": "BAAI/bge-small-zh-v1.5",
+                          "weights_hash": None},
+            calibration={"mode": "formal", "weights": {"cone": 0.4},
+                         "card_fingerprint": "c2:55be644d4c446514"},
+            detector_config={"window": 5, "high": 0.132, "low": 0.125},
+            judgment={"texts": texts, "n_texts": len(texts)},
+            items=[])                       # ← 一条都没判出来
+
+    out = compare_artifacts(_build(), _build())
+    assert out["verdict"] == "not_comparable", out["verdict"]
+    assert out["exit_code_equivalent"] == 2, out["exit_code_equivalent"]
+    # 必须有 witness：说了"一条都没比"，而不是安静地什么都不写
+    assert out["checks"], "没有留下任何 check，等于什么都没说"
+    assert any("一条都没比" in (c.get("note") or "") for c in out["checks"]), out["checks"]
+    assert out["residuals"]["per_item"] == []
+
+
+def test_one_sided_empty_is_still_a_mismatch():
+    """对照：一侧空、一侧有条目 → 仍然 mismatch（不因上面的修复被带成 not_comparable）。
+
+    两格必须分开钉住：只钉"两侧皆空"有可能顺手把"一侧空缺"也改成不可比，
+    而那格原本是对的——条目数不等是**可发现**的差异，不是无从比对。
+    """
+    class _Card:
+        card_id = "c1"
+
+        def fingerprint(self):
+            return "c2:55be644d4c446514"
+
+    def _build(items):
+        return build_artifact(
+            engine_version="2.5.1", card=_Card(),
+            encoder_info={"name": "BAAI/bge-small-zh-v1.5",
+                          "weights_hash": None},
+            calibration={"mode": "formal", "weights": {"cone": 0.4},
+                         "card_fingerprint": "c2:55be644d4c446514"},
+            detector_config={"window": 5, "high": 0.132, "low": 0.125},
+            judgment={"texts": ["甲"], "n_texts": 1},
+            items=items)
+
+    out = compare_artifacts(_build([]), _build([{"index": 0, "score": 0.1}]))
+    assert out["verdict"] == "mismatch", out["verdict"]

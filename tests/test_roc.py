@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from direction_drift.calibration.record import build_calibration_record
 from direction_drift.calibration.roc import calibrate_thresholds, scan_operating_points
 
 
@@ -52,3 +53,53 @@ def test_scan_operating_points_extreme_is_safe():
     assert bottom["false_positives"] == 2
     # 高阈值端：一只都抓不到
     assert rows[0]["recall"] == "0/2" and rows[0]["false_positives"] == 0
+
+
+def test_unachievable_precision_does_not_fall_back_to_a_fake_threshold():
+    """达标不可得时**不许**回落成一个看起来正常的数字。
+
+    出处：挑刺报告 P1-6。原形态 `else: t, ap, ar = 0.5, None, None`——
+    而默认 `low=0.4` / `high=0.6`，0.5 恰好落在两者中间，**长得完全像标定结果**。
+    于是"这次没算出阈值"会被读成"标定结果是 0.5"，一路写进产物用下去。
+
+    它与 P0-2（两侧皆空 → consistent）是同一形：**fallback 值伪装成测量值**。
+    修法也同形——给不出来就给 None，并把为什么给不出来一并带出去。
+    """
+    # 两类严重重叠：无论阈值取在哪，精确率都上不去
+    scores = [0.50, 0.51, 0.52, 0.53, 0.54, 0.55, 0.56, 0.57]
+    labels = [0, 1, 0, 1, 0, 1, 0, 1]
+    out = calibrate_thresholds(scores, labels, target_precision=0.99)
+
+    assert out["achievable"] is False, out
+    assert out["suggested_low"] is None, out          # 不是 0.5，是"没有"
+    assert out["suggested_high"] is None, out
+    assert isinstance(out.get("reason"), str) and out["reason"], out
+    # witness：原因里要说清目标准确率与本次实际最好值
+    assert "0.99" in out["reason"], out["reason"]
+
+
+def test_unachievable_calibration_cannot_be_written_as_a_record():
+    """算不出阈值的标定**不许落成产物**——宁可失败，也不留一个假数字。
+
+    对照组：显式给了 low / high（人工选点）时允许写入——那是另一种合法来源，
+    不是回落值。两格都要钉住，否则"禁止假阈值"会顺手把人工选点也堵死。
+    """
+    scores = [0.50, 0.51, 0.52, 0.53, 0.54, 0.55, 0.56, 0.57]
+    labels = [0, 1, 0, 1, 0, 1, 0, 1]
+    calib = calibrate_thresholds(scores, labels, target_precision=0.99)
+
+    with pytest.raises(ValueError, match="没能给出可用阈值"):
+        build_calibration_record(
+            calibration=calib, mode="synthetic", source="t", n=len(scores),
+            n_positive=sum(labels), encoder="e", weights=None,
+            prompt_version="p", card_fingerprint="c2:abc")
+
+    # 人工选定操作点：low / high 都是显式给的，允许写入
+    rec = build_calibration_record(
+        calibration=calib, mode="formal", source="t", n=len(scores),
+        n_positive=sum(labels), encoder="e", weights={"cone": 0.4},
+        prompt_version="p", card_fingerprint="c2:abc",
+        low=0.125, high=0.132,
+        label_provenance="人工标注", recall_at_low="4/4",
+        operating_point="人工选点")
+    assert rec["low"] == 0.125 and rec["high"] == 0.132

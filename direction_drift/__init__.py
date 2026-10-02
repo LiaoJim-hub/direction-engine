@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """direction-drift：AI 方向漂移检测引擎（Direction Engine）
 
-版本：2.5.1
+版本：2.5.2
 蓝本：同目录《方向漂移检测工具：MVP代码框架 v2.2（最终版）.md》
 2.5.1 新增：**规范摘要收口** `verify.texts_digest()` / `results_digest()`，以及
       `de check --artifact`（把一次判定写成**判定产物信封** JSON）。
@@ -76,4 +76,4 @@
 2.3.0 新增：多节点共存层 `coexistence`（自我降级协议 + 同步传播信封，零依赖）。
 2.2.4 新增：状态序列化（detector/protocol/session_state），托管层持久化用。
 """
-__version__ = "2.5.1"
+__version__ = "2.5.2"

@@ -422,6 +422,34 @@ def compare_artifacts(a: Dict[str, Any], b: Dict[str, Any], *,
                              len(items_a) or None, len(items_b) or None,
                              "条目数不等或一侧空缺：无法逐条对齐，不猜"))
         numeric_bad.append("judgment.results")
+    else:
+        # 修复：**两侧都没有条目**时，上面两个分支都不成立 → 一条都没比
+        # 却走到下面的 `consistent`。这是本项目最典型的那一形——"没比对"被输出成
+        # "一致"——而且它长在测量器自己身上，比长在被测量物上更致命。
+        #
+        # 典型成因（都是真实发生过的，不是假想）：窗口未填满（window=5 而只喂了
+        # 3 条）→ judged=0；或全部条目被放弃判定。此时两份产物确实"一样空"，
+        # 但那不叫复算一致，那叫**这次一条都没比**。按项目纪律，不可比 ≠ 不一致，
+        # 所以这里既不是 consistent 也不是 mismatch，而是 not_comparable（退出码 2）。
+        checks.append(_check("judgment.results", ["judgment", "results"],
+                             "numeric", "missing", 0, 0,
+                             "两侧都没有任何判定条目：本次**一条都没比上**，"
+                             "不可读作一致。典型成因是滑窗未填满（judged=0）"
+                             "或全部条目放弃判定"))
+
+    if not items_a and not items_b:
+        return {
+            "verdict": "not_comparable",
+            "exit_code_equivalent": EXIT_CODES["not_comparable"],
+            "checks": checks,
+            "residuals": {"max_abs_delta": None, "per_item": [],
+                          "tolerance": tolerance},
+            "notes": notes + [
+                "两侧 items 皆空：本次没有比对任何一条，因此**不存在**"
+                "『复算一致』这个结论。先确认两侧是否都真的没判定（如滑窗未填满），"
+                "再谈一致与否。",
+            ],
+        }
 
     verdict = "mismatch" if (provenance_bad or numeric_bad) else "consistent"
     return {
