@@ -40,13 +40,15 @@
 
 ### 测试
 
-- `tests/test_return_protocol.py` **+12**：三条钉 `normal` 守卫（含**负对照**：本来就
-  `running` 时必须照常 `continue`）· 一条钉 `resume()` 之后能继续 · 四条钉 `resume()`
-  全成败与落痕（其中 `test_resume_failure_is_all_or_nothing` 用**改了一半再抛**的替身
-  考回滚，不是考「恰好还没改」）· **四条钉 `revise()` 全成败**，其中两条**用真
-  `DriftDetector`**（见下面那条"回滚踩过 deque"）。
-- `tests/test_api_server.py` **+2**：重建之后锥**必须解冻** · 坏样本 ⇒ 400 且**旧锥没动**。
-- 全量 **384 项**（以 `pytest` 实测为准）。
+- `tests/test_return_protocol.py` **+13**（5 → 18）· `tests/test_api_server.py` **+2**（27 → 29）
+  ⇒ ★ **全仓 `def test_` 287 → 302**（★ 差 **+15**）。★ 逐条：
+  ★ 三条钉 `normal` 守卫（含**负对照**：本来就 `running` 时必须照常 `continue`）·
+  ★ 一条钉 `resume()` 之后能继续 · ★ 四条钉 `resume()` 全成败与落痕
+  （其中 `test_resume_failure_is_all_or_nothing` 用**改了一半再抛**的替身考回滚，
+  不是考「恰好还没改」）· ★ 四条钉 `revise()` 全成败，★ 其中两条**用真 `DriftDetector`**
+  （见下面那条"回滚踩过 deque"）。
+- 全量 **384 项 · 0 failed · 0 errors**（★ `2ed44ba` 基线是 **369** ⇒ **+15**）。
+  ★★ 注意：**判据是"零失败"，不是固定项数** —— ★ 加测试项数就会变。
 
 ### 修复（二）`revise()` + 端点去掉第二副本
 
