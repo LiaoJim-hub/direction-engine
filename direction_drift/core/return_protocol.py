@@ -50,6 +50,27 @@ class ResumeFailed(RuntimeError):
                 type(cause).__name__, cause, state_kept))
 
 
+class ReviseFailed(RuntimeError):
+    """`revise()` 全成败：失败时**锥、检测器、协议状态三样一样都没动**。
+
+    ★ v2.5.3 修（实测）：原实现把"解冻"排在"重建"之前 —— 重建一抛，锥就停在
+    「已解冻但没重建」，即**一次什么都没发生、却解了冻**。而"方向"是这个引擎的核心物，
+    它不该在失败时处于"半新"状态。
+
+    - `state_kept`：失败后被保持住的协议状态。
+    - `cause`：底层异常（原文保留）。
+    """
+
+    def __init__(self, state_kept: str, cause: BaseException):
+        self.state_kept = state_kept
+        self.cause = cause
+        super().__init__(
+            "重建方向失败（{0}: {1}）—— **锥、检测器、协议状态三样都没动**，"
+            "本协议仍停在 `{2}`，方向仍是旧的那一个。"
+            "请查因后重试 `revise()`；★ 不要把它读成方向已换。".format(
+                type(cause).__name__, cause, state_kept))
+
+
 @dataclass
 class DiagnoseConfig:
     cone_align_low: float = 0.4        # 未标定参考值
@@ -74,13 +95,14 @@ class ReturnProtocol:
         return [dict(r) for r in self.returns]
 
     def _log_return(self, ok: bool, cone: Optional[DirectionCone],
-                    cause: Optional[BaseException] = None) -> None:
+                    cause: Optional[BaseException] = None,
+                    trigger: str = "resume()") -> None:
         rec = {"at": datetime.now().isoformat(timespec="seconds"),
                "ok": bool(ok),
                "state_before": self.state,
                "state_after": "running" if ok else self.state,
                "cone_was_frozen": bool(cone is not None and cone.frozen),
-               "trigger": "resume()"}
+               "trigger": trigger}
         if cause is not None:
             rec["error"] = "{0}: {1}".format(type(cause).__name__, cause)
         self.returns.append(rec)
@@ -215,23 +237,92 @@ class ReturnProtocol:
                 "cone_was_frozen": was_frozen}
 
     @staticmethod
+    def _restore_seq(dst, src: list) -> None:
+        """把 `dst` 恢复成源快照 `src`（内容与原顺序）。
+
+        ★ 为什么不能直接 `dst[:] = src`：`DriftDetector.history` 与 `.means`
+        是 **`deque(maxlen=…)`**，切片赋值在 deque 上不成立（`TypeError`）。
+        用 `clear()` + `extend()` 对两者都成立，且**不动 maxlen**。
+        """
+        dst.clear()
+        dst.extend(src)
+
+    @staticmethod
     def _rollback(cone: DirectionCone, detector: DriftDetector, snap: Dict) -> None:
         """把三样都按快照还原。★ 回滚面与 `DriftDetector.reset()` 绑定（见 `resume()` docstring）。"""
         cone.frozen, cone.frozen_at, cone.freeze_reason = snap["cone"]
         del detector.archive[snap["det_archive_len"]:]      # 去掉 reset 追加的那一条
-        detector.history[:] = snap["det_history"]
-        detector.means[:] = snap["det_means"]
+        ReturnProtocol._restore_seq(detector.history, snap["det_history"])
+        ReturnProtocol._restore_seq(detector.means, snap["det_means"])
         detector._cusum_s = snap["det_cusum"]
         detector.state = snap["det_state"]
 
     def revise(self, cone: DirectionCone, detector: DriftDetector,
                core_samples: list, boundary_samples: list = None,
-               negative_samples: list = None) -> Dict:
-        cone.unfreeze()
-        cone.rebuild_from_samples(core_samples, boundary_samples, negative_samples)
-        detector.reset()
-        self.state = "running"
-        return {"action": "continue", "message": "方向已用新样本重建"}
+               negative_samples: list = None, embed_fn=None) -> Dict:
+        """用新样本重建方向：**全成败**（★ 丙案 · 两段式）。
+
+        ★ v2.5.3 修（实测）：原实现是三行顺序执行，且**"解冻"跑在"重建"之前** ——
+        于是 `rebuild_from_samples()` 一抛，锥就停在「**已解冻但没重建**」：
+        一次"什么都没发生，却解了冻"。而 `rebuild_from_samples()` 自身**是两段式**
+        （先 `DirectionCone.from_samples(...)` 造成新锥，全成才逐个赋值）⇒
+        ★ **只要把不可失败的赋值留到最后，就能做到全成败 —— 不需要造第二只锥。**
+
+        故本方法把顺序改为：**① 重建（会抛）→ ② 重置检测器（会抛）→ ③ 提交**。
+        ①② 任一抛 ⇒ **回滚并抛 `ReviseFailed`**；两种结局都落进 `returns`。
+
+        ★ 回滚面与 `DirectionCone.rebuild_from_samples()` 和
+        `DriftDetector.reset()` 的实现绑定（见下方 `_rollback_revise`）——
+        它们若改了动哪些字段，这里必须跟着改。
+        """
+        snap = {
+            "protocol_state": self.state,
+            "cone": (cone.frozen, cone.frozen_at, cone.freeze_reason),
+            "cone_axis": cone.axis, "cone_aperture": cone.aperture,
+            "cone_softness": cone.softness,
+            "cone_neg": list(cone.negative_examples),
+            "cone_counts": (cone.core_sample_count, cone.boundary_sample_count,
+                            cone.negative_sample_count),
+            "cone_rebuild_count": cone.rebuild_count,
+            "cone_last_rebuild": cone.last_rebuild_time,
+            "det_archive_len": len(detector.archive),
+            "det_history": list(detector.history),
+            "det_means": list(detector.means),
+            "det_cusum": detector._cusum_s,
+            "det_state": detector.state,
+        }
+        was_frozen = cone.frozen
+        try:
+            # ★ 顺序是刻意的：会抛的两件事都排在"提交"之前
+            cone.rebuild_from_samples(core_samples, boundary_samples, negative_samples,
+                                      embed_fn=embed_fn)
+            detector.reset()                 # P0：换方向必须重置
+            cone.unfreeze()                  # ← 提交段：以下都不会抛
+            self.state = "running"
+        except BaseException as e:           # noqa: BLE001
+            self._rollback_revise(cone, detector, snap)
+            self._log_return(False, cone, e, trigger="revise()")
+            raise ReviseFailed(snap["protocol_state"], e) from e
+        self._log_return(True, cone, trigger="revise()")
+        return {"action": "continue", "message": "方向已用新样本重建",
+                "cone_was_frozen": was_frozen}
+
+    @staticmethod
+    def _rollback_revise(cone: DirectionCone, detector: DriftDetector, snap: Dict) -> None:
+        """把锥与检测器都按快照还原。★ 回滚面与那两个实现绑定（见 `revise()` docstring）。"""
+        cone.frozen, cone.frozen_at, cone.freeze_reason = snap["cone"]
+        cone.axis, cone.aperture, cone.softness = (snap["cone_axis"], snap["cone_aperture"],
+                                                   snap["cone_softness"])
+        cone.negative_examples = snap["cone_neg"]
+        (cone.core_sample_count, cone.boundary_sample_count,
+         cone.negative_sample_count) = snap["cone_counts"]
+        cone.rebuild_count = snap["cone_rebuild_count"]
+        cone.last_rebuild_time = snap["cone_last_rebuild"]
+        del detector.archive[snap["det_archive_len"]:]
+        ReturnProtocol._restore_seq(detector.history, snap["det_history"])
+        ReturnProtocol._restore_seq(detector.means, snap["det_means"])
+        detector._cusum_s = snap["det_cusum"]
+        detector.state = snap["det_state"]
 
     # ---- v2.2.4 状态序列化（托管持久化用）----
 

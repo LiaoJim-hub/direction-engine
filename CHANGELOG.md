@@ -40,20 +40,46 @@
 
 ### 测试
 
-- `tests/test_return_protocol.py` **+8**：三条钉 `normal` 守卫（含**负对照**：本来就
-  `running` 时必须照常 `continue`）· 一条钉 `resume()` 之后能继续 · **四条钉全成败与落痕**
-  （其中 `test_resume_failure_is_all_or_nothing` 用**改了一半再抛**的替身考回滚，
-  不是考「恰好还没改」）。
-- 全量 **377 项**（369 + 8，以 `pytest` 实测为准）。
+- `tests/test_return_protocol.py` **+12**：三条钉 `normal` 守卫（含**负对照**：本来就
+  `running` 时必须照常 `continue`）· 一条钉 `resume()` 之后能继续 · 四条钉 `resume()`
+  全成败与落痕（其中 `test_resume_failure_is_all_or_nothing` 用**改了一半再抛**的替身
+  考回滚，不是考「恰好还没改」）· **四条钉 `revise()` 全成败**，其中两条**用真
+  `DriftDetector`**（见下面那条"回滚踩过 deque"）。
+- `tests/test_api_server.py` **+2**：重建之后锥**必须解冻** · 坏样本 ⇒ 400 且**旧锥没动**。
+- 全量 **384 项**（以 `pytest` 实测为准）。
 
-### 未处置（★ 同一形状，已实测，等裁定）
+### 修复（二）`revise()` + 端点去掉第二副本
 
-- **`ReturnProtocol.revise()` 会留下更重的半状态。** 它同样是三步顺序执行
-  （`cone.unfreeze()` → `cone.rebuild_from_samples()` → `detector.reset()` →
-  `state = "running"`）。实测：让 `detector.reset()` **改了一半再抛** ⇒
-  **锥已解冻且已重建、检测器历史已清，而协议状态仍是 `paused`**。
-  即：**方向已经换了，而系统还写着"停着"** —— 比 `resume()` 那处更重。
-  本次**未改**（不在已裁定的范围内）；处置方式应与 `resume()` 同法。
+- **`ReturnProtocol.revise()` 同样改为全成败，并新增 `ReviseFailed`。**
+  它原先把「解冻」排在「重建」**之前** ⇒ 重建一抛，锥就停在
+  **「已解冻但没重建」**：一次什么都没发生、却解了冻。
+  实测让 `detector.reset()` **改了一半再抛** ⇒ 锥已解冻**且已重建**、检测器历史已清，
+  而协议仍是 `paused` —— **方向已经换了，而系统还写着"停着"**。
+  修法：**会抛的两件事（重建 / reset）都排到"提交"之前**；任一失败 ⇒ 回滚并抛
+  `ReviseFailed`。`rebuild_from_samples()` 自身本就是两段式（先造新锥、全成才赋值），
+  所以**不需要造第二只锥**。
+- **`POST /v1/rebuild/{id}` 改为委派 `revise()`。** 它原先自带一份
+  「`rebuild_from_samples` + `detector.reset()`」的**第二副本**，而两份**不一致**：
+  端点**从不调用 `cone.unfreeze()`** ⇒ **重建之后方向换了、而锥仍标着冻结**
+  （实测复现：`rebuild_count` 3→4，而 `frozen` 仍为 `True`）。副本正是这个病的根。
+  现在：**一处真理，两处使用。**
+- **`revise()` 新增 `embed_fn` 参数** —— 端点原先直接传编码器，而 `revise()` 不收它；
+  不补这个参数就**无法委派**（会静默丢编码器）。
+- **失败按原因分流**（包装不许把两种失败糊成一种）：`ReviseFailed.cause` 是
+  `ValueError`（样本不合规）⇒ **400**；其余 ⇒ **500**，且响应带上
+  `state_kept` 与 `cone_unchanged: true`。`/v1/resume` 的 `ResumeFailed` 同样处理。
+  ⇒ 调用方由此知道**系统状态没变**，而不是只看到一个裸 500。
+- **★ 回滚踩过 `deque`（本版最值得记的一条）**：最初的回滚写的是
+  `detector.history[:] = snap[...]`，而 `history` / `means` 是
+  **`deque(maxlen=…)`、不是 `list`** ⇒ 回滚自身 `TypeError`
+  （`sequence index must be integer, not 'slice'`），把原始错误整个吞掉。
+  它**没被测出来**，因为当时的失败测试都用**假 detector（history 是 list）** ——
+  是 **API 层用真件**跑出来的。现回滚改用 `clear()` + `extend()`（对两者都成立、
+  不动 `maxlen`），并**加了一条用真 `DriftDetector` 的测试**钉住类型事实。
+  ★ 教训写在这里：**假件验的是我以为的形状，不是真的形状。**
+
+### 未处置（★ 已实测 · 等裁定）
+
 - **`returns` 落痕不持久化。** 它只活在进程内（`to_dict()` 只存 `state` / `diag`）
   ⇒ 跨重启不可溯。真实账本适配在调用方；`coexistence.DeclarationLedger` 是内存态的，
   不能代替它。

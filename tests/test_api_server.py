@@ -312,6 +312,51 @@ def test_rebuild_replaces_the_cone_and_resets_the_detector(encoder):
     assert r.status_code == 200 and r.json()["status"] == "rebuilt"
 
 
+def test_rebuild_also_unfreezes_the_cone(encoder):
+    """★ v2.5.3：重建之后**锥不许还冻着**。
+
+    此前的端点自带一份「rebuild_from_samples + detector.reset()」的第二副本，
+    而它**从不调用 `cone.unfreeze()`** ⇒ 方向已经换了、锥却仍标着冻结
+    （实测复现）。现改为委派 `ReturnProtocol.revise()`，本条钉住那个后果。
+    """
+    store = InMemorySessionStore()
+    _, client = _client(store=store, encoder=encoder)
+    _check(client, "帮我把第2天的行程排一下", direction=CARD)
+
+    # 直接把锥标成冻结（本测试只关心"重建有没有把它解开"，不关心怎么冻上的）
+    store.get("s1").cone.freeze("confirmed_drift")
+    assert client.get("/v1/state/s1", headers={"X-API-Key": KEY}).json()["cone"]["frozen"] is True
+
+    r = client.post("/v1/rebuild/s1", json={
+        "goal": "帮用户规划旅行",
+        "core_samples": CORE, "boundary_samples": BOUNDARY,
+        "negative_samples": NEGATIVE}, headers={"X-API-Key": KEY})
+    assert r.status_code == 200, r.text
+
+    st = client.get("/v1/state/s1", headers={"X-API-Key": KEY}).json()
+    assert st["cone"]["frozen"] is False, "方向换了，锥就不该还冻着"
+    assert st["cone"]["rebuild_count"] >= 1
+    assert st["protocol_state"] == "running"
+    assert st["detector"]["history"] == [], "换方向必须重置检测器（P0）"
+
+
+def test_bad_rebuild_is_400_and_leaves_the_old_cone(encoder):
+    """★ 样本不合规 ⇒ 400，且**旧锥没被动过**（全成败）。"""
+    store = InMemorySessionStore()
+    _, client = _client(store=store, encoder=encoder)
+    _check(client, "帮我把第2天的行程排一下", direction=CARD)
+    before = store.get("s1").cone.to_dict()
+
+    r = client.post("/v1/rebuild/s1", json={
+        "goal": "帮用户规划旅行", "core_samples": ["太少了"]},
+        headers={"X-API-Key": KEY})
+    assert r.status_code == 400, r.text
+
+    after = store.get("s1").cone.to_dict()
+    assert after["axis"] == before["axis"], "失败的 revise 不许动锥"
+    assert after["rebuild_count"] == before["rebuild_count"]
+
+
 def test_resume_is_reachable(encoder):
     _, client = _client(encoder=encoder)
     _check(client, "帮我把第2天的行程排一下", direction=CARD)

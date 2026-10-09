@@ -19,7 +19,8 @@ import pytest
 
 from direction_drift.core.direction_cone import DirectionCone
 from direction_drift.core.drift_detector import DriftDetector
-from direction_drift.core.return_protocol import DiagnoseConfig, ResumeFailed, ReturnProtocol
+from direction_drift.core.return_protocol import (DiagnoseConfig, ResumeFailed,
+                                                   ReturnProtocol, ReviseFailed)
 
 CRITICAL = {"drift_level": "confirmed_drift"}
 
@@ -291,3 +292,174 @@ def test_return_log_is_a_copy_not_the_internal_list():
     snap = proto.return_log()
     snap.clear()
     assert len(proto.return_log()) == 1, "外部改副本不许影响内部"
+
+
+# ------------------------------------------------- revise() 全成败（v2.5.3 · 丙案）
+#
+# 原实现把"解冻"排在"重建"之前 ⇒ 重建一抛，锥就停在「已解冻但没重建」：
+# **一次什么都没发生、却解了冻**。而方向是这个引擎的核心物，不该在失败时"半新"。
+# 修法：会抛的两件事都排到"提交"之前（重建 → reset → 解冻 → state）。
+# 下面三条钉住它；★ 第二、三条分别考**重建抛**与**reset 改了一半再抛**。
+
+
+class _ConeStub:
+    """一个可控的锥替身：能记下 rebuild 调用，也能在 rebuild 时抛。"""
+
+    def __init__(self, fail_on_rebuild=False):
+        self.axis, self.aperture, self.softness = [1.0, 0.0], 0.5, 0.1
+        self.goal, self.constraints, self.values = "G", [], []
+        self.negative_examples = ["old-neg"]
+        self.core_sample_count, self.boundary_sample_count = 22, 8
+        self.negative_sample_count = 1
+        self.frozen, self.frozen_at, self.freeze_reason = True, None, "confirmed_drift"
+        self.rebuild_count, self.last_rebuild_time = 3, None
+        self.fail_on_rebuild = fail_on_rebuild
+
+    def rebuild_from_samples(self, core_samples, boundary_samples=None,
+                             negative_samples=None, embed_fn=None):
+        if self.fail_on_rebuild:
+            raise ValueError("核心样本不足：需要至少 20 个，当前 3 个。")
+        self.axis, self.aperture, self.softness = [0.0, 1.0], 0.9, 0.2
+        if negative_samples:
+            self.negative_examples = list(negative_samples)
+            self.negative_sample_count = len(negative_samples)
+        self.core_sample_count = len(core_samples)
+        self.boundary_sample_count = len(boundary_samples or [])
+        self.rebuild_count += 1
+        self.last_rebuild_time = "now"
+
+    def unfreeze(self):
+        self.frozen, self.frozen_at, self.freeze_reason = False, None, ""
+
+
+def _revise_fixture():
+    proto = ReturnProtocol()
+    proto.act({"drift_level": "drift"}, None, None)
+    assert proto.state == "paused"
+    return proto
+
+
+def test_revise_success_rebuilds_and_commits():
+    """正常路：锥被重建、检测器重置、协议回 running，且落痕记 trigger=revise()。"""
+    proto = _revise_fixture()
+    cone = _ConeStub()
+
+    class _DetOK:
+        def __init__(self):
+            self.archive, self.history, self.means = [], [1], [0.5]
+            self._cusum_s, self.state = 1.0, "running"
+
+        def reset(self):
+            self.archive.append(list(self.history))
+            self.history.clear()
+            self.means.clear()
+            self._cusum_s, self.state = 0.0, "warmup"
+
+    det = _DetOK()
+    r = proto.revise(cone, det, core_samples=["a"] * 24, negative_samples=["n1"])
+
+    assert r["action"] == "continue"
+    assert cone.frozen is False and cone.rebuild_count == 4
+    assert det.state == "warmup" and det.history == []
+    assert proto.state == "running"
+    assert proto.return_log()[-1]["trigger"] == "revise()"
+    assert proto.return_log()[-1]["ok"] is True
+
+
+def test_revise_failure_on_rebuild_changes_nothing():
+    """★ 重建就抛 ⇒ 锥不许停在「已解冻但没重建」（那是"什么都没发生却解了冻"）。"""
+    proto = _revise_fixture()
+    cone = _ConeStub(fail_on_rebuild=True)
+    before = (list(cone.axis), cone.frozen, cone.rebuild_count, cone.negative_examples)
+
+    with pytest.raises(ReviseFailed) as ei:
+        proto.revise(cone, _DetHalfway(), core_samples=["a"] * 3)
+
+    assert ei.value.state_kept == "paused"
+    assert (list(cone.axis), cone.frozen, cone.rebuild_count,
+            cone.negative_examples) == before, "锥必须一项都没动"
+    assert proto.state == "paused"
+
+
+def test_rollback_works_on_the_real_detector_types():
+    """★ 回滚必须在**真件**上成立 —— 因为它踩过这个坑。
+
+    `DriftDetector.history` 与 `.means` 是 **`deque(maxlen=…)`**，不是 `list`：
+    最初的回滚写的是 `history[:] = snap`，在 deque 上直接 `TypeError`
+    （"sequence index must be integer, not 'slice'"）。而 resume()/revise() 的
+    失败测试当时都用**假 detector（history 是 list）**，所以那个形状一直没被测到——
+    它是被 **API 层用真件**跑出来的。
+
+    本条用真 `DriftDetector` 钉住类型事实，使同一个坑不会再被"假件"藏起来。
+    """
+    from collections import deque
+
+    det = DriftDetector(high=0.8, low=0.4, calibrated=True)
+    assert isinstance(det.history, deque) and isinstance(det.means, deque), (
+        "若这两个不是 deque，回滚的 _restore_seq 说明与实现脱节了")
+
+    # 喂点状态进去，再走一遍真实的 reset + 回滚
+    det.history.extend([{"score": 0.9}, {"score": 0.3}])
+    det.means.extend([0.9, 0.6])
+    det._cusum_s = 0.42
+    det.state = "running"
+    cone = _ConeStub()
+    snap = {
+        "cone": (cone.frozen, cone.frozen_at, cone.freeze_reason),
+        "cone_axis": cone.axis, "cone_aperture": cone.aperture, "cone_softness": cone.softness,
+        "cone_neg": list(cone.negative_examples),
+        "cone_counts": (cone.core_sample_count, cone.boundary_sample_count,
+                        cone.negative_sample_count),
+        "cone_rebuild_count": cone.rebuild_count, "cone_last_rebuild": cone.last_rebuild_time,
+        "det_archive_len": len(det.archive), "det_history": list(det.history),
+        "det_means": list(det.means), "det_cusum": det._cusum_s, "det_state": det.state,
+    }
+
+    det.reset()                                   # ★ 真件的重置
+    assert det.history == deque() and det.state == "warmup"
+
+    ReturnProtocol._rollback(cone, det, snap)     # ★ 真件上的回滚（不许抛）
+
+    assert list(det.history) == [{"score": 0.9}, {"score": 0.3}], "history 要逐项回"
+    assert list(det.means) == [0.9, 0.6], "means 要逐项回"
+    assert det._cusum_s == 0.42 and det.state == "running"
+    assert det.history.maxlen == 50, "回滚不许动 deque 的 maxlen"
+
+
+def test_revise_failure_uses_real_detector_and_leaves_it_untouched():
+    """★ 用**真**检测器验"重建失败 ⇒ 检测器一项没动"（不靠假件的形状）。"""
+    proto = _revise_fixture()
+    cone = _ConeStub(fail_on_rebuild=True)
+    det = DriftDetector(high=0.8, low=0.4, calibrated=True)
+    det.history.extend([{"score": 0.5}])
+    det.means.extend([0.5])
+    det._cusum_s, det.state = 0.7, "running"
+    before = (list(det.history), list(det.means), det._cusum_s, det.state, det.archive)
+
+    with pytest.raises(ReviseFailed):
+        proto.revise(cone, det, core_samples=["太少了"])
+
+    assert (list(det.history), list(det.means), det._cusum_s, det.state,
+            det.archive) == before, "重建就失败 ⇒ 检测器不该被动过"
+    assert proto.state == "paused"
+
+
+def test_revise_failure_halfway_rolls_back_cone_and_detector():
+    """★ 重建成了、reset 改了一半再抛 ⇒ 锥与检测器都必须回到失败前。"""
+    proto = _revise_fixture()
+    cone = _ConeStub()
+    det = _DetHalfway()
+    before = (list(cone.axis), cone.aperture, cone.frozen, cone.rebuild_count,
+              cone.negative_examples, cone.core_sample_count)
+
+    with pytest.raises(ReviseFailed):
+        proto.revise(cone, det, core_samples=["a"] * 24)
+
+    after = (list(cone.axis), cone.aperture, cone.frozen, cone.rebuild_count,
+             cone.negative_examples, cone.core_sample_count)
+    assert after == before, "锥必须整只退回旧的那一个"
+    assert det.archive == [] and det.history == [1, 2] and det.means == [0.5]
+    assert det._cusum_s == 1.0 and det.state == "running"
+    assert proto.state == "paused"
+    assert proto.return_log()[-1]["ok"] is False
+    assert "RuntimeError" in proto.return_log()[-1]["error"]

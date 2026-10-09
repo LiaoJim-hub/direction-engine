@@ -47,7 +47,7 @@ from ..core.alignment import AlignmentCalculator
 from ..core.constraint_checker import ConstraintChecker
 from ..core.direction_cone import DirectionCone
 from ..core.drift_detector import DriftDetector
-from ..core.return_protocol import ReturnProtocol
+from ..core.return_protocol import ResumeFailed, ReturnProtocol, ReviseFailed
 from ..core.session_store import (DEFAULT_MAX_COUNT, DEFAULT_MAX_IDLE_SECONDS,
                                   InMemorySessionStore, Session, SessionStore)
 
@@ -199,7 +199,13 @@ def create_app(encoder=None, store: Optional[SessionStore] = None,
         session = store.get(system_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found")
-        result = session.protocol.resume(session.cone, session.detector)
+        try:
+            result = session.protocol.resume(session.cone, session.detector)
+        except ResumeFailed as e:
+            # ★ 与 rebuild 同法：失败**没有改动任何状态**，故把这件事写进响应
+            raise HTTPException(status_code=500, detail={
+                "error": "resume_failed", "message": str(e),
+                "state_kept": e.state_kept, "cone_unchanged": True})
         store.set(system_id, session)      # 状态迁移必须落回存储，否则换实现就丢
         return result
 
@@ -209,15 +215,29 @@ def create_app(encoder=None, store: Optional[SessionStore] = None,
         session = store.get(system_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found")
+        # ★ v2.5.3：改为**委派 `ReturnProtocol.revise()`** —— 原先这里自带一份
+        #   「rebuild_from_samples + detector.reset()」的第二副本，而两份**不一致**：
+        #   端点**从不调用 `cone.unfreeze()`** ⇒ 重建之后方向换了、锥却仍标着冻结
+        #   （实测复现）。副本正是这个病的根，故去掉它：一处真理，两处使用。
+        #   `revise()` 现在也是全成败（失败抛 `ReviseFailed`，三样都不动）。
         try:
-            session.cone.rebuild_from_samples(
+            session.protocol.revise(
+                session.cone, session.detector,
                 core_samples=direction.core_samples,
                 boundary_samples=direction.boundary_samples,
                 negative_samples=direction.negative_samples,
                 embed_fn=encoder.encode)
-            session.detector.reset()
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        except ReviseFailed as e:
+            # ★ 按**原因**分流（★ 包装不许把两种失败糊成一种）：
+            #   · 样本本身不合规（ValueError：核心样本不足 / 编码器退化）⇒ **400**，是调用方的输入问题
+            #   · 其余 ⇒ **500**，是引擎内部失败
+            #   两种都**没有改动任何状态**（`revise()` 是全成败）⇒ 把"没变"写进响应，
+            #   别让调用方以为方向换了。
+            if isinstance(e.cause, ValueError):
+                raise HTTPException(status_code=400, detail=str(e.cause))
+            raise HTTPException(status_code=500, detail={
+                "error": "revise_failed", "message": str(e),
+                "state_kept": e.state_kept, "cone_unchanged": True})
         store.set(system_id, session)      # 改锥 + reset 同样是状态迁移
         return {"status": "rebuilt", "cone": session.cone.to_dict()}
 
