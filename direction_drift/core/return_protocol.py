@@ -4,9 +4,19 @@
 `diag`（诊断阈值配置）整体存续。**注意纪律**：恢复一个处于 paused/returning
 的快照**不会**自动恢复运行——返回与恢复是两个方向的动作，只有人（或显式调用
 `resume()`）能让它转回 running。序列化只搬运状态。
+
+v2.5.3 两条（外部挑刺 P0-1 与一次实测）：
+- **`normal` 分支的守卫**：此前它无条件 `self.state = "running"`，于是**一条 normal
+  就把 paused / returning 静默推回运行**——与本模块上面那句声明直接矛盾。
+  现改为：只有本就在 running 时才 continue；从停态来的一律 `observe` + `requires_human`。
+- **`resume()` 全成败**：它原先三步（`cone.unfreeze()` → `detector.reset()` →
+  `self.state = "running"`），**任一步抛就留下半恢复态** —— 而"该不该回去"正是这条线
+  的价值所在，故返回这件事**不许半途而废**。现改为快照→试→失败回滚，并抛
+  `ResumeFailed`；两种结局都记进 `returns`（第一次落痕）。
 """
 
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from ..utils.json_safe import jsonable
@@ -16,6 +26,28 @@ from .drift_detector import DriftDetector
 # 快照格式版本，规则同 DriftDetector.STATE_SCHEMA_VERSION
 STATE_SCHEMA_VERSION = 1
 _KNOWN_STATES = ("running", "observing", "paused", "returning")
+
+
+class ResumeFailed(RuntimeError):
+    """`resume()` 全成败：失败时**什么都没变**，且这件事可被读出来。
+
+    为什么要有这个类型（而不是让底层异常直接冒上来）：`resume()` 是三步
+    （`cone.unfreeze()` → `detector.reset()` → `state = "running"`）。
+    任一底步失败时，若只把原异常抛出去，调用方看不出"系统停在哪" ——
+    而"要不要回去"正是这条线的价值所在（见模块 docstring 与 CONSTITUTION 一.4
+    "只显形不修正"的对偶：**也不许把一次失败显形成一次成功**）。
+
+    - `state_kept`：失败后被保持住的协议状态（即失败前那个）。
+    - `cause`：底层异常的类型名与消息（原文保留，不外泄成一句笼统话）。
+    """
+
+    def __init__(self, state_kept: str, cause: BaseException):
+        self.state_kept = state_kept
+        self.cause = cause
+        super().__init__(
+            "返回失败（{0}: {1}）—— **什么都没改**，本协议仍停在 `{2}`。"
+            "请查因后重试 `resume()`；★ 不要把它读成已恢复。".format(
+                type(cause).__name__, cause, state_kept))
 
 
 @dataclass
@@ -31,6 +63,27 @@ class ReturnProtocol:
     def __init__(self, diag: Optional[DiagnoseConfig] = None):
         self.state = "running"
         self.diag = diag or DiagnoseConfig()
+        # ★ v2.5.3：返回动作的落痕（第一次）。append-only，不删除。
+        #   为什么要有它：本模块声称"返回是人的动作"，而**此前没有任何地方记下
+        #   "谁在什么时候返回了"** ⇒ "返回过"这件事不可溯，而这条线的规则二正是"可溯"。
+        #   ★ 两种结局都记：成功与失败。失败不记 ⇒ 会把"返回失败"整段抹掉。
+        self.returns: List[Dict] = []
+
+    def return_log(self) -> List[Dict]:
+        """返回动作的落痕（只读副本）。成功与失败都在里面。"""
+        return [dict(r) for r in self.returns]
+
+    def _log_return(self, ok: bool, cone: Optional[DirectionCone],
+                    cause: Optional[BaseException] = None) -> None:
+        rec = {"at": datetime.now().isoformat(timespec="seconds"),
+               "ok": bool(ok),
+               "state_before": self.state,
+               "state_after": "running" if ok else self.state,
+               "cone_was_frozen": bool(cone is not None and cone.frozen),
+               "trigger": "resume()"}
+        if cause is not None:
+            rec["error"] = "{0}: {1}".format(type(cause).__name__, cause)
+        self.returns.append(rec)
 
     def act(self, drift_result: Dict, cone: Optional[DirectionCone] = None,
             alignment: Optional[Dict] = None) -> Dict:
@@ -55,7 +108,16 @@ class ReturnProtocol:
                     "message": "未标定观察期，仅记录",
                     "diagnosis_calibrated": self.diag.calibrated}
         if level == "normal":
-            self.state = "running"
+            # ★★ 守卫（2026-10-09）：本模块声明「只有人（或显式调用 resume()）能让它转回
+            # running」。本分支原先无条件 self.state = "running" ⇒ 一条 normal 就把
+            # paused / returning 静默推回运行（已实测复现）。
+            # ⇒ 故：只有【本就在 running】时才维持 running；从停态来的，不自动回。
+            if self.state != "running":
+                return {"action": "observe",
+                        "message": ("输入未再触发漂移，但**返回是人的动作**，不自动恢复 —— "
+                                    "请显式调用 resume()（继续）或 revise()（用新样本重建方向）"),
+                        "state_kept": self.state,
+                        "requires_human": True}
             return {"action": "continue", "message": "方向正常"}
 
         reasons = self._diagnose(drift_result, alignment)
@@ -115,10 +177,52 @@ class ReturnProtocol:
         return reasons or ["综合对齐度低"]
 
     def resume(self, cone: DirectionCone, detector: DriftDetector) -> Dict:
-        cone.unfreeze()
-        detector.reset()                     # P0：恢复必须重置（且历史已归档）
-        self.state = "running"
-        return {"action": "continue", "message": "已恢复，detector已重置（历史已归档）"}
+        """显式返回：**全成败**。要么三样（锥 / 检测器 / 协议状态）都回 running，要么一样都不动。
+
+        ★ v2.5.3 修（实测复现）：此前是三行顺序执行，**任一步抛就留下半恢复态** ——
+        例如 `detector.reset()` 抛之后，检测器已被重置、锥已解冻，而协议仍写着 `paused`。
+        那正是这条线修过四次的同一形状：**状态与实况不符**（可见的 metadata 在陈述一件
+        没发生的事）。而"该不该回去"恰是这条线的价值所在 ⇒ 返回不许半途而废。
+
+        实现：★ 先取快照（回滚面**精确列出**，不用反射）⇒ 逐件试 ⇒ 任一失败**回滚并抛
+        `ResumeFailed`**。两种结局都落进 `returns`。
+
+        ★ 一条要写明的耦合：回滚面与 `DriftDetector.reset()` 的实现绑定
+        （`archive` / `history` / `means` / `_cusum_s` / `state`）。
+        若 reset 改了它动哪些字段，这里必须跟着改——**否则回滚会悄悄回不干净**。
+        """
+        snap = {
+            "protocol_state": self.state,
+            "cone": (cone.frozen, cone.frozen_at, cone.freeze_reason),
+            "det_archive_len": len(detector.archive),
+            "det_history": list(detector.history),
+            "det_means": list(detector.means),
+            "det_cusum": detector._cusum_s,
+            "det_state": detector.state,
+        }
+        was_frozen = cone.frozen
+        try:
+            cone.unfreeze()
+            detector.reset()                 # P0：恢复必须重置（且历史已归档）
+            self.state = "running"
+        except BaseException as e:           # noqa: BLE001  ★ 连 KeyboardInterrupt 也要回滚
+            self._rollback(cone, detector, snap)
+            self._log_return(False, cone, e)
+            raise ResumeFailed(snap["protocol_state"], e) from e
+        self._log_return(True, cone)
+        return {"action": "continue",
+                "message": "已恢复，detector已重置（历史已归档）",
+                "cone_was_frozen": was_frozen}
+
+    @staticmethod
+    def _rollback(cone: DirectionCone, detector: DriftDetector, snap: Dict) -> None:
+        """把三样都按快照还原。★ 回滚面与 `DriftDetector.reset()` 绑定（见 `resume()` docstring）。"""
+        cone.frozen, cone.frozen_at, cone.freeze_reason = snap["cone"]
+        del detector.archive[snap["det_archive_len"]:]      # 去掉 reset 追加的那一条
+        detector.history[:] = snap["det_history"]
+        detector.means[:] = snap["det_means"]
+        detector._cusum_s = snap["det_cusum"]
+        detector.state = snap["det_state"]
 
     def revise(self, cone: DirectionCone, detector: DriftDetector,
                core_samples: list, boundary_samples: list = None,

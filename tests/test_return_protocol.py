@@ -19,7 +19,7 @@ import pytest
 
 from direction_drift.core.direction_cone import DirectionCone
 from direction_drift.core.drift_detector import DriftDetector
-from direction_drift.core.return_protocol import DiagnoseConfig, ReturnProtocol
+from direction_drift.core.return_protocol import DiagnoseConfig, ResumeFailed, ReturnProtocol
 
 CRITICAL = {"drift_level": "confirmed_drift"}
 
@@ -136,3 +136,158 @@ def test_other_levels_do_not_claim_any_freeze(level, expected_action):
     r = proto.act({"drift_level": level, "history_size": 0, "needed": 5}, None, None)
     assert r["action"] == expected_action
     assert "frozen" not in r
+
+
+# ------------------------------------------------- 停态不许被 normal 静默推回
+#
+# 本模块 docstring 逐字写着：「只有人（或显式调用 `resume()`）能让它转回 running」。
+# 而 `if level == "normal"` 那一支原先无条件 `self.state = "running"` ⇒
+# 一条 normal 就把 paused / returning 静默推回运行。
+# ⇒ 下面三条钉住它；第三条是**负对照**（正常路不许被拦掉）。
+
+
+def test_normal_does_not_silently_resume_from_paused():
+    """drift 停到 paused 之后，再来一条 normal 不许把它推回 running。"""
+    proto = ReturnProtocol()
+    proto.act({"drift_level": "drift"}, None, None)
+    assert proto.state == "paused"
+
+    r = proto.act({"drift_level": "normal"}, None, None)
+
+    assert proto.state == "paused", "返回是人的动作，不许被一条 normal 静默推回"
+    assert r["action"] == "observe", "此时不该 continue（那等于说'方向正常'）"
+    assert r.get("requires_human") is True
+    assert r.get("state_kept") == "paused"
+
+
+def test_normal_does_not_silently_resume_from_returning():
+    """confirmed_drift 停到 returning 之后，同一条 normal 也不许推回。"""
+    proto = ReturnProtocol()
+    proto.act(dict(CRITICAL), _minimal_cone(), None)
+    assert proto.state == "returning"
+
+    r = proto.act({"drift_level": "normal"}, None, None)
+
+    assert proto.state == "returning", "已移交人的状态不许自动解除"
+    assert r["action"] == "observe"
+
+
+def test_negative_control_normal_still_runs_when_already_running():
+    """负对照：本来就 running 时，normal 必须照常 continue（否则是把正常路也拦掉了）。"""
+    proto = ReturnProtocol()
+    assert proto.state == "running"
+
+    r1 = proto.act({"drift_level": "normal"}, None, None)
+    r2 = proto.act({"drift_level": "normal"}, None, None)
+
+    assert r1["action"] == "continue"
+    assert r2["action"] == "continue"
+    assert proto.state == "running"
+
+
+def test_resume_is_the_only_way_back_and_it_works():
+    """显式 `resume()` 之后，normal 应重新能 continue（守卫不许把合法返回堵死）。"""
+    proto = ReturnProtocol()
+    proto.act({"drift_level": "drift"}, None, None)
+    assert proto.state == "paused"
+
+    detector = DriftDetector(high=0.8, low=0.4, calibrated=True)
+    proto.resume(_minimal_cone(), detector)
+
+    assert proto.state == "running", "resume() 是回来的唯一正路"
+    r = proto.act({"drift_level": "normal"}, None, None)
+    assert r["action"] == "continue"
+
+
+# ------------------------------------------------- resume() 全成败 + 返回落痕（v2.5.3）
+#
+# 原先 `resume()` 是三行顺序执行 ⇒ **任一步抛就留下半恢复态**：
+# 检测器已重置、锥已解冻，而协议仍写着 `paused` —— 状态与实况不符。
+# 而"该不该回去"正是这条线的价值所在 ⇒ 返回不许半途而废。
+# 下面四条钉住它；★ 第二条是**回滚的真正考题**（让假件**改了一半再抛**）。
+
+
+class _DetHalfway:
+    """一个**改了一半再抛**的检测器替身 —— 专门用来考回滚，而不是考"恰好还没改"。"""
+
+    def __init__(self):
+        self.archive: list = []
+        self.history: list = [1, 2]
+        self.means: list = [0.5]
+        self._cusum_s: float = 1.0
+        self.state: str = "running"
+
+    def reset(self):
+        if self.history:
+            self.archive.append(list(self.history))     # ① 先归档
+        self.history.clear()                            # ② 清 history
+        self.means.clear()                              # ③ 清 means
+        raise RuntimeError("模拟：清完之后、归零之前失败")
+
+
+def _proto_paused():
+    proto = ReturnProtocol()
+    proto.act({"drift_level": "drift"}, None, None)
+    cone = _minimal_cone()
+    cone.freeze("confirmed_drift")
+    return proto, cone
+
+
+def test_resume_failure_is_all_or_nothing():
+    """★ 回滚的真正考题：假件改了一半再抛 ⇒ 三样都必须回到失败前，一样都不许留半。"""
+    proto, cone = _proto_paused()
+    det = _DetHalfway()
+    det.state = "running"
+
+    with pytest.raises(ResumeFailed) as ei:
+        proto.resume(cone, det)
+
+    assert ei.value.state_kept == "paused"
+    assert proto.state == "paused", "协议状态不许半恢复"
+    assert cone.frozen is True, "锥不许被解冻 —— 那会显形成一次成功"
+    assert det.archive == [], "reset 追加的那一条归档必须撤掉"
+    assert det.history == [1, 2] and det.means == [0.5], "历史与均值必须原样回来"
+    assert det._cusum_s == 1.0 and det.state == "running", "CUSUM 与检测器状态也要回"
+
+
+def test_resume_failure_is_visible_and_says_nothing_changed():
+    """失败必须**可读出来**：异常类型 + `state_kept` + 一句"什么都没改"。"""
+    proto, cone = _proto_paused()
+    with pytest.raises(ResumeFailed) as ei:
+        proto.resume(cone, _DetHalfway())
+
+    msg = str(ei.value)
+    assert "什么都没改" in msg
+    assert "paused" in msg
+    assert isinstance(ei.value.__cause__, RuntimeError), "底层原因不许被吞掉"
+
+
+def test_both_outcomes_land_in_the_return_log():
+    """★ 返回落痕：**两种结局都记** —— 失败不记就等于把"返回失败"整段抹掉。"""
+    proto, cone = _proto_paused()
+    assert proto.return_log() == [], "还没返回过，落痕应为空"
+
+    with pytest.raises(ResumeFailed):
+        proto.resume(cone, _DetHalfway())
+    ok_rec = [r for r in proto.return_log()]
+    assert len(ok_rec) == 1 and ok_rec[0]["ok"] is False
+    assert "RuntimeError" in ok_rec[0]["error"], "失败原因要留原文，不许压成一句笼统话"
+    assert ok_rec[0]["state_before"] == "paused"
+
+    proto2 = ReturnProtocol()
+    proto2.act({"drift_level": "drift"}, None, None)
+    proto2.resume(_minimal_cone(), DriftDetector(high=0.8, low=0.4, calibrated=True))
+    good = proto2.return_log()
+    assert len(good) == 1 and good[0]["ok"] is True
+    assert good[0]["state_after"] == "running"
+
+
+def test_return_log_is_a_copy_not_the_internal_list():
+    """落痕是**只读副本** —— 调用方改它不许动到内部记录。"""
+    proto = ReturnProtocol()
+    proto.act({"drift_level": "drift"}, None, None)
+    proto.resume(_minimal_cone(), DriftDetector(high=0.8, low=0.4, calibrated=True))
+
+    snap = proto.return_log()
+    snap.clear()
+    assert len(proto.return_log()) == 1, "外部改副本不许影响内部"

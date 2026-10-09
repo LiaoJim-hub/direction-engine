@@ -7,6 +7,59 @@
 场景卡与标定数据不在本仓，它们的版本另由标定文件的 `prompt_version` 绑定
 （改版后必须复检——见 CONSTITUTION.md 第三节"标定诚实性"）。
 
+## [2.5.3] - 2026-10-09
+
+**「不许显形成一次没发生的动作」的第四、第五次**（外部挑刺 P0-1 + 一次实测）。
+
+### 修复
+
+- **`ReturnProtocol.act`：`normal` 分支加守卫（外部挑刺 P0-1）。**
+  该分支此前无条件 `self.state = "running"` ⇒ **一条 `normal` 就把 `paused` /
+  `returning` 静默推回运行**，而本模块 docstring 逐字写着「只有人（或显式调用
+  `resume()`）能让它转回 running」。现改为：**只有本就在 `running` 时才 `continue`；
+  从停态来的一律 `observe` + `requires_human=True` + `state_kept`**。
+  已实测复现：`drift ⇒ paused`，再喂 `normal ⇒ running`（静默恢复）。
+- **`ReturnProtocol.resume()`：改为全成败，并新增 `ResumeFailed`。**
+  它原先三步顺序执行（`cone.unfreeze()` → `detector.reset()` → `state = "running"`），
+  **任一步抛就留下半恢复态**：检测器已重置、锥已解冻，而协议仍写着 `paused` ——
+  状态与实况不符。现改为**快照 → 逐件试 → 任一失败回滚并抛 `ResumeFailed`**；
+  异常带 `state_kept` 与底层 `cause`，消息明写「什么都没改」。
+  回滚面与 `DriftDetector.reset()` 绑定（`archive` / `history` / `means` /
+  `_cusum_s` / `state`）—— **reset 若改字段，这里必须跟改**。
+
+### 新增
+
+- **`ReturnProtocol.returns` + `return_log()`：返回动作的落痕（第一次）。**
+  本模块声称「返回是人的动作」，而此前**没有任何地方记下谁在什么时候返回了** ——
+  「返回过」不可溯，而这条线的规则二正是「可溯」。**两种结局都记**（成功与失败）；
+  失败不记 ⇒ 等于把「返回失败」整段抹掉。`return_log()` 返回**只读副本**。
+  （真实账本适配在调用方；`coexistence.DeclarationLedger` 是内存态的，不能代替它。）
+
+两条与 2.3.3 / 2.3.5 / 2.4.0 / 2.5.2 是同一形：**状态与实况不符** ——
+一条是「它说恢复了，而没人恢复」，一条是「它失败了，而没人知道」。
+
+### 测试
+
+- `tests/test_return_protocol.py` **+8**：三条钉 `normal` 守卫（含**负对照**：本来就
+  `running` 时必须照常 `continue`）· 一条钉 `resume()` 之后能继续 · **四条钉全成败与落痕**
+  （其中 `test_resume_failure_is_all_or_nothing` 用**改了一半再抛**的替身考回滚，
+  不是考「恰好还没改」）。
+- 全量 **377 项**（369 + 8，以 `pytest` 实测为准）。
+
+### 未处置（★ 同一形状，已实测，等裁定）
+
+- **`ReturnProtocol.revise()` 会留下更重的半状态。** 它同样是三步顺序执行
+  （`cone.unfreeze()` → `cone.rebuild_from_samples()` → `detector.reset()` →
+  `state = "running"`）。实测：让 `detector.reset()` **改了一半再抛** ⇒
+  **锥已解冻且已重建、检测器历史已清，而协议状态仍是 `paused`**。
+  即：**方向已经换了，而系统还写着"停着"** —— 比 `resume()` 那处更重。
+  本次**未改**（不在已裁定的范围内）；处置方式应与 `resume()` 同法。
+- **`returns` 落痕不持久化。** 它只活在进程内（`to_dict()` 只存 `state` / `diag`）
+  ⇒ 跨重启不可溯。真实账本适配在调用方；`coexistence.DeclarationLedger` 是内存态的，
+  不能代替它。
+
+---
+
 ## [2.5.2] - 2026-10-02
 
 **两条"缺位被输出成正常值"的修复**（外部挑刺报告 v1.0 的 P0-2 / P1-6）。
