@@ -34,7 +34,7 @@ numpy / pydantic / scikit-learn / jieba；`[sbert]`、`[api]`、`[llm]`、`[dev]
 
 ```bash
 pip install -e .            # 核心依赖仅 numpy/pydantic/scikit-learn/jieba
-pytest                      # 389 项测试全离线通过（待发版本实测）
+pytest                      # 406 项测试全离线通过（待发版本实测）
 python examples/demo.py     # 一条命令跑通 建锥→标定→检测→通道信号
 python examples/demo.py roleplay_companion_v1   # 换一张卡再跑
 ```

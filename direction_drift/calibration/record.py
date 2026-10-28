@@ -183,3 +183,87 @@ def environment_fingerprint(*, encoder: str, weights: Optional[Dict] = None,
 def required_formal_fields() -> List[str]:
     """把"正式标定该记什么"暴露成可枚举的清单，便于文档与守卫共用一份。"""
     return list(REQUIRED_FORMAL)
+
+
+# --------------------------------------------------------------------------
+# 标定保质期（2026-10-28 · A · 补上 README 第 5 条性质的实现）
+# --------------------------------------------------------------------------
+# 病灶（2026-10-28 盘点）：README 门面写着
+#   「5. **标定有保质期**：标定文件绑定提示词版本（`prompt_version`），
+#       智能体改版后**引擎主动提醒复检**——阈值不是永久的。」
+# 而 `cli.py:581` 的 `--prompt-version` 帮助文本更狠：
+#   「标定保质期锚点：改提示词后同步改它，**否则标定会静默过期**」
+#
+# **然后全包里一个字节的检查都没有**：`stale` / `expire` / `recheck` /
+# `needs_review` / `该复检` 各 0 次；`verify.py` 里 `prompt_version` 0 次。
+# `prompt_version` 只被**写进**产物（6 处），**从来没有被读出来比对过**。
+#
+# ⇒ 故「引擎主动提醒复检」这句，在 2026-10-28 之前是**一个 null 指针**。
+#   本函数把它变成可调用的一格。★ **它不改任何现有流程**（没有调用点被强插），
+#   故它不构成"新增性质"，只是让已有性质**可被调用**。
+
+#: ★★ 三值 —— **不用布尔**。理由同 §4「不可核」：
+#:   · `match`   —— 记录的版本 == 当前版本 ⇒ 标定在该版本下有效
+#:   · `stale`   —— 记录的版本 != 当前版本 ⇒ **标定过期，该复检**
+#:   · `unknown` —— 任一侧缺（旧产物没记 / 调用方没给）⇒ **不能判绿也不能判红**
+#:
+#: ★★★ 为什么必须有 `unknown`：`prompt_version` 是 2026-10 之后才进
+#:   `REQUIRED_FORMAL` 的，**此前产出的标定里它可能是 `None`**。
+#:   把 `None` 当成 `stale` 会把一批**本来有效的旧标定**判死；
+#:   把 `None` 当成 `match` 则是**把不知道渲染成通过**——那是伪造。
+PROMPT_VERSION_STATUSES = ("match", "stale", "unknown")
+
+
+def check_prompt_version(record: Dict,
+                         current_prompt_version: Optional[str]) -> Dict:
+    """判一份标定产物**是否已过保质期**（README 第 5 条性质的实现）。
+
+    `record`：`build_calibration_record` 的返回（或任何含 `prompt_version` 的 dict）。
+    `current_prompt_version`：**当前**智能体的提示词版本（由调用方给，不从卡里读）。
+
+    返回 `{"status": ..., "recorded": ..., "current": ..., "reason": ...}`，
+    `status` 必在 `PROMPT_VERSION_STATUSES` 里。
+
+    ★ 用法（★ 本函数**不替你决定怎么办**：「只显形，不修正」——
+      它只说"过期了"，要不要重标定是人的决定）：
+
+    >>> r = check_prompt_version(rec, "1.2")
+    >>> if r["status"] == "stale":
+    ...     print("该复检：标定在 1.0 下算出，而当前提示词是 1.2")
+
+    ★★ **为什么不比较卡指纹**：卡指纹答"卡变没变"，本函数答"提示词变没变"——
+      两者**正交**，任一变了标定都该复检。本函数只管后者，因为门面第 5 条写的就是后者。
+    """
+    recorded = record.get("prompt_version") if isinstance(record, dict) else None
+    recorded = (recorded or "").strip() or None
+    current = (current_prompt_version or "").strip() or None
+
+    if recorded is None:
+        return {"status": "unknown", "recorded": None, "current": current,
+                "reason": "标定产物里没有 prompt_version（旧产物，或产出时未传）"
+                          " ⇒ 无法判断是否过期，不得判绿也不得判红"}
+    if current is None:
+        return {"status": "unknown", "recorded": recorded, "current": None,
+                "reason": "调用方没给当前 prompt_version ⇒ 无参照，"
+                          "不得判绿也不得判红"}
+    if recorded == current:
+        return {"status": "match", "recorded": recorded, "current": current,
+                "reason": "标定与当前提示词同版本"}
+    return {"status": "stale", "recorded": recorded, "current": current,
+            "reason": (f"标定在 prompt_version={recorded!r} 下算出，"
+                       f"而当前是 {current!r} ⇒ **该复检**：阈值不跨提示词版本有效")}
+
+
+def prompt_version_warning(record: Dict,
+                           current_prompt_version: Optional[str]) -> Optional[str]:
+    """给 CLI / 报告用的一句话提醒；`match` 与 `unknown` 都返回 `None`。
+
+    ★ `unknown` 也返回 `None` 是**刻意的**：一条"我不知道"的提醒，会让人误以为
+      引擎知道得多。`unknown` 该由**要判定的那一层**（报告 / 人）显式处理，
+      不该在这里变成一句含糊的话。
+    """
+    r = check_prompt_version(record, current_prompt_version)
+    if r["status"] != "stale":
+        return None
+    return ("⚠ 标定已过期：" + r["reason"] +
+            "。请用当前提示词重跑标定（`de calibrate`），不要沿用旧阈值。")
