@@ -71,6 +71,40 @@
   反测（缺字段 ⇒ 不报）· 以及一条**守性质③**的
   `test_the_stale_warning_is_not_a_refusal`（过期**不许**变成拒绝跑）。
 
+### 修复
+
+- **★ 敌手 D 第 16 轮 P0-1：提醒里那句「重跑标定」指向一条**不存在的命令**。**
+  `prompt_version_warning` 的正文写「请用当前提示词重跑标定（`de calibrate`）」，
+  而 `de` 的子命令只有 `init / check / report / card / verify` —— 实测
+  `de: error: argument cmd: invalid choice: 'calibrate'`。
+  那条提醒是整个机制**唯一产出价值的那一次输出**（`match` / `unknown` 都不说话），
+  而它给出的**唯一下一步不可执行**。一个只在「出事」时说话、说了却指错路的机制，
+  比不说话更容易误导——因为它已经成功引起了注意。
+  修法选「改文案」而不是「补一个 `de calibrate` 子命令」：后者会与既有分层冲突
+  （阈值属于标定产物，正式标定在私有仓产出）。改后的文案只说**本仓内能走的那条路**：
+  改卡的 `prompt_version` 后重跑 `de check`（它会用卡内样本重新自标定）。
+- **★★ 敌手 D 第 16 轮 P0-2：判出来的「过期」进不了任何产物。**
+  复算：`de check` 的 console 里有「标定已过期」，而 `--artifact` 产出的信封里
+  `prompt_version` 出现 **0 次**；`verify.py` 里也 **0 次**。同层邻居
+  `weights`（comparability）与 `card_fingerprint`（provenance）都被比了，唯独它没有。
+  后果（D 的原话）：客户改完提示词、重跑检测、把两份产物交给第三方复算 ——
+  **`verify` 会说 `consistent`**，因为两份用的都是同一套跨提示词版本的阈值，
+  而**它没有字段可以看见这件事**。「标定有保质期」这条性质，此前**只活在
+  跑命令那台机器的 console 一次性输出里**。
+  修三处（而第二、三处超出报告要求）：
+  · `cli._write_artifact` 的 `calibration` 字典加 `prompt_version`（报告说的「一行」）；
+  · `verify.build_artifact` 的 `card` 字典**也**加 `prompt_version` —— 只做标定侧的话，
+    产物里仍然没有「当前是哪一版」，故只能比 A/B 之间是否同源，
+    **而不能比「标定那一版 vs 现在这一版」—— 而后者才是「过期」**；
+  · `verify.compare_artifacts` 加两条 provenance 比对：`calibration.prompt_version`
+    （A/B 同源）与 `calibration.prompt_version_vs_card`（标定 vs 卡当前）。
+    后者缺字段时判 `uncomputable`，**不得判绿**。
+  实测修后：产物里 `prompt_version` 出现 2 次（`3.0` 与 `4.0`），`de verify` `rc = 1`，
+  `calibration.prompt_version: equal` 而 `calibration.prompt_version_vs_card: differ`。
+- **新增 `docs/挑刺应答·敌手D第16轮（2026-10-28）.md`**：七条逐条分诊
+  （确认 / 驳回 / 拿不准）。其中 **P2-1**（`backfilled` 时写的是当前卡指纹）
+  我判「拿不准」，留着发思考台。
+
 ### 改变
 
 - **README「五条可验证的性质」每一条现在点一条测试。**
@@ -79,7 +113,7 @@
 
 ### 测试
 
-- `def test_` **302 → 331**（★ +29）。用例数 **384 → 415**（★ +31，参数化后）。
+- `def test_` **302 → 338**（★ +36）。用例数 **384 → 422**（★ +38，参数化后）。
   两侧读数都在 README 的门面上（`test_readme_test_count_matches_collected` 守着）。
 
 ---
