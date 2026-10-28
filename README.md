@@ -17,14 +17,31 @@ Direction Engine 用"方向锥 + 组合判据 + 场景卡"把每一次偏移显�
 
 ## 五条可验证的性质（这是本项目的门面，不是口号）
 
+**「可验证」在这里有具体含义：每一条都点了一条测试。点开就能看它怎么验、怎么会被推翻。**
+（2026-10-28 之前的版本只写了性质、没点测试——那时「可验证」是一个承诺，不是一个读数。）
+
 1. **本地执行**：核心链路不联网、无遥测；嵌入模型（可选）可完全本地运行。
+   → [`test_core_chain_imports_no_network_client`](tests/test_property_local_only.py)
+   · [`test_core_chain_imports_no_telemetry_package`](tests/test_property_local_only.py)
 2. **场景卡是数据，不是代码**：接入一个新场景 = 写一张 JSON 卡（样本 + 约束 + 红线），
    不改引擎一行代码。阈值**不在卡里**——它属于标定产物。见 `examples/cards/`。
+   → [`test_a_brand_new_json_card_runs_the_whole_chain`](tests/test_property_card_as_data.py)
+   （在 `tmp_path` 里现写一张全新卡、带一条引擎从未见过的规则，跑通全链）
+   · [`test_card_schema_has_no_threshold_field`](tests/test_property_card_as_data.py)
 3. **只显形，不修正**：引擎绝不自动修改你的智能体、绝不自动触发"纠正动作"。
    告警归引擎，决定归人（`return_protocol` 的所有恢复动作都由人工/返回层触发）。
+   → [`test_failure_only_surfaces_never_corrects`](tests/test_coexistence.py)
+   · [`test_no_machinery_is_surfaced_not_silently_passed`](tests/test_constraint_layer.py)
 4. **可返回、无锁定**：全部检测轨迹与判定可导出（JSONL/HTML），随时离开。
+   → [`test_resume_is_reachable`](tests/test_api_server.py)
+   · [`test_return_protocol_does_not_act_on_insufficient_input`](tests/test_input_guards.py)
 5. **标定有保质期**：标定文件绑定提示词版本（`prompt_version`），智能体改版后
    引擎主动提醒复检——阈值不是永久的。
+   → [`test_stale_when_prompt_version_changed`](tests/test_property_calibration_shelf_life.py)
+   · 实现见 `direction_drift/calibration/record.py::check_prompt_version`（三值：match / stale / unknown）
+
+**「可验证」的可错之处，如实写在 [`docs/五条性质×有没有测试（2026-10-28）.md`](docs/五条性质×有没有测试（2026-10-28）.md)**
+——那里有这次盘点的方法与读数，包括「⑤ 在 2026-10-28 之前根本没有实现」这件事。
 
 ## 快速开始（30 秒，零下载零 GPU）
 
@@ -34,7 +51,7 @@ numpy / pydantic / scikit-learn / jieba；`[sbert]`、`[api]`、`[llm]`、`[dev]
 
 ```bash
 pip install -e .            # 核心依赖仅 numpy/pydantic/scikit-learn/jieba
-pytest                      # 406 项测试全离线通过（待发版本实测）
+pytest                      # 410 项测试全离线通过（待发版本实测）
 python examples/demo.py     # 一条命令跑通 建锥→标定→检测→通道信号
 python examples/demo.py roleplay_companion_v1   # 换一张卡再跑
 ```
@@ -292,7 +309,7 @@ no_data("order_db")      # L5：输出"无数据"，不编造
 
 ## 版本沿革
 
-当前版本 **v2.5.3**（2026-10-09）。完整沿革、每条变更的理由、以及宪法修订记录，
+当前版本 **v2.5.4**（2026-10-28）。完整沿革、每条变更的理由、以及宪法修订记录，
 统一维护在 [`CHANGELOG.md`](CHANGELOG.md)——README 不再重复一份，避免两处失真。
 （版本指针与上面的测试数都由 `tests/test_docs_consistency.py` 断言，不会再悄悄落后。）
 

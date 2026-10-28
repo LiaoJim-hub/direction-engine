@@ -7,6 +7,68 @@
 场景卡与标定数据不在本仓，它们的版本另由标定文件的 `prompt_version` 绑定
 （改版后必须复检——见 CONSTITUTION.md 第三节"标定诚实性"）。
 
+## [2.5.4] - 2026-10-28
+
+**「可验证」那两个字，第一次有了读数**（2026-10-28 盘点 · 补验证 + 补一个实现）。
+
+### 新增
+
+- **`tests/test_property_local_only.py`（5 条）—— 性质①「本地执行」的可验证性。**
+  盘点发现：README 门面写「五条可验证的性质」，而 `tests/` 里只有 ③④ 各有一条
+  名字对得上的测试；**① 一条都没有**（`socket` / `requests.` / `urllib.request` /
+  `urlopen` / `no_network` / `telemetry` / `offline` 在 `tests/` 里逐词搜，各 0 文件）。
+  用 `ast` 取 import（不扫字符串，避免注释里的 `requests` 误报）；可选扩展走
+  **显式白名单**（`api/server.py` · `utils/encoder.py` · `utils/nli.py`）——
+  清单能被审查，「跳过某目录」不能。
+- **`tests/test_property_card_as_data.py`（5 条）—— 性质②「场景卡是数据，不是代码」。**
+  在 `tmp_path` 里**现写一张全新 JSON 卡**（不读 `examples/cards/`、不复制现成卡），
+  带一条引擎里**从未出现过**的 `rule_layer` 规则，走公开 API 跑通
+  `from_file → build_cone → align → calibrate_thresholds → DriftDetector.judge
+  → rule_hit → is_suspect`。断言新卡规则能命中（证明卡的声明真的进了判定链）；
+  反测「阈值不在卡里」（往卡里塞 `low` / `high` 必须被 `extra="forbid"` 拒）。
+  顺带确认 `DirectionCone.from_samples` 的两条硬约束：核心样本 ≥20、反面样本 ≥10。
+- **`calibration/record.py::check_prompt_version` / `prompt_version_warning` —— 性质⑤的实现。**
+  ★ 这是本次最重的发现：README 门面写「智能体改版后**引擎主动提醒复检**」，
+  `cli.py:581` 的 `--prompt-version` 帮助文本更写「改提示词后同步改它，
+  **否则标定会静默过期**」——**而全包里一个字节的检查都没有**：
+  `stale` / `expire` / `recheck` / `needs_review` / `该复检` 各 0 次，
+  `verify.py` 里 `prompt_version` 0 次。`prompt_version` 只被**写进**产物（6 处），
+  **从来没有被读出来比对过**。
+  ⇒ 故那句承诺在此之前是**一个 null 指针**。这不是「缺一条测试」，是「缺一个实现」。
+  - 三值枚举 `PROMPT_VERSION_STATUSES = (match / stale / unknown)`，**不是布尔**：
+    `prompt_version` 是 2026-10 之后才进 `REQUIRED_FORMAL` 的，此前的产物里它可能是
+    `None`。把它当 `stale` 会把一批本来有效的旧标定判死；把它当 `match` 则是
+    **把不知道渲染成通过**。
+  - `prompt_version_warning()` 在 `unknown` 时返回 `None` 是刻意的：一句「我不知道」
+    的提醒会让人误以为引擎知道得多；`unknown` 该由要判定的那一层显式处理。
+  - **本函数不改任何现有流程**（没有调用点被强插）⇒ 它不新增性质，
+    只让已有性质可被调用。
+- **`tests/test_property_calibration_shelf_life.py`（12 条）**，含反向测试
+  「`unknown` 不得被静默判成 `match`」。
+- **`tests/test_text_integrity.py::test_no_utf8_bom_in_any_text_file` —— BOM 守卫（2 条）。**
+  2026-10-28 两次同一个坑：用 PowerShell 的 `Set-Content -Encoding UTF8` 写回文件，
+  它在文件头加了 BOM ⇒ 该文件的 `ast.parse` 直接抛
+  `SyntaxError: invalid non-printable character U+FEFF`；改 README 一行时同一个写法
+  也带了 BOM。**为什么上面那条控制字符守卫抓不到它**：它查 `ord(ch) < 0x20`，
+  而 `U+FEFF` 是 0xFEFF —— BOM 是**一个现有守卫抓不到的形态**。
+  故本条走**字节层**（`read_text` 会把 BOM 当成正文第一个字符静默留下）。
+- **`docs/五条性质×有没有测试（2026-10-28）.md`** —— 盘点方法与读数（含「⑤ 之前
+  根本没有实现」这件事）。该件已加进 `test_docs_consistency.py` 的 `DOCS`：
+  一份被别人链着的件，它的链接坏了就是**别人的门面坏了**。
+
+### 改变
+
+- **README「五条可验证的性质」每一条现在点一条测试。**
+  「可验证」在 2026-10-28 之前是一个**承诺**，现在是一个**读数**：
+  点开就能看它怎么验、怎么会被推翻。
+
+### 测试
+
+- `def test_` **302 → 322**（★ +20）。用例数 **384 → 410**（★ +26，参数化后）。
+  两侧读数都在 README 的门面上（`test_readme_test_count_matches_collected` 守着）。
+
+---
+
 ## [2.5.3] - 2026-10-09
 
 **「不许显形成一次没发生的动作」的第四、第五次**（外部挑刺 P0-1 + 一次实测）。

@@ -22,6 +22,10 @@ DOCS = ["README.md", "CHANGELOG.md", "CODE_OF_CONDUCT.md", "CONSTITUTION.md",
         "CONTRIBUTING.md", "SECURITY.md", "docs/philosophy.md",
         "docs/persistence.md", "docs/scenario-card.md",
         "docs/protention-proposal-review.md", "docs/cli.md", "examples/README.md",
+        # ★ 2026-10-28 加：五条性质的盘点件。README 现在直接链到它（「可验证」的
+        #   可错之处写在那里），故它也该被「无悬空链接 / 围栏配对」这两条守着 ——
+        #   ★ 一份被别人链着的件，它的链接坏了就是**别人的门面坏了**。
+        "docs/五条性质×有没有测试（2026-10-28）.md",
         ".github/PULL_REQUEST_TEMPLATE.md"]
 
 

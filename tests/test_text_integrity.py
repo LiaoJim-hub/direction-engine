@@ -149,3 +149,72 @@ def test_the_absolute_path_checker_can_fail():
         bad = [m for m in ABS_PATH.finditer(ok)
                if ok[m.start():m.start() + 3] not in ABS_PATH_ALLOW]
         assert not bad, f"核验器误报：{ok!r} 被判成写死路径（{bad}）"
+
+
+# --------------------------------------------------------------------------
+# UTF-8 BOM 守卫（2026-10-28 加）
+# --------------------------------------------------------------------------
+# 起因：2026-10-28 两次同一个坑 ——
+#   ① 修一个源文件时用 PowerShell 的 `Set-Content -Encoding UTF8` 写回，
+#      它在文件头加了 BOM（EF BB BF）⇒ 该文件的 `ast.parse` 直接抛
+#      `SyntaxError: invalid non-printable character U+FEFF`。
+#   ② 改 README 里一行测试数时用了同一个写法 ⇒ README 也带了 BOM。
+#
+# **为什么上面那条 `test_no_control_characters_in_any_text_file` 抓不到它**：
+# 它查的是 `ord(ch) < 0x20` 的控制字符，而 **U+FEFF 不在那个范围**（它是
+# 0xFEFF）。故 BOM 是**一个现有守卫抓不到的形态**——这正是本条存在的理由。
+#
+# **为什么 BOM 本身是错的**（而不是"无害的三字节"）：
+#   · 它让 `python xxx.py` 在某些工具链下报 SyntaxError（见①的实测）；
+#   · 它让 `git diff` 把整个文件当成改过（第一行变了）；
+#   · 它是**编辑器/工具链的指纹**，不是内容——而本仓不允许"内容之外的东西"
+#     出现在文本件里（同 `test_no_hardcoded_local_absolute_paths` 的口径）。
+BOM = b"\xef\xbb\xbf"
+
+
+def test_no_utf8_bom_in_any_text_file():
+    """任何文本件都不得以 UTF-8 BOM 开头。
+
+    ★ 判法：按**字节**读，看前 3 字节是不是 EF BB BF —— 不走文本解码，
+      因为 `read_text(encoding="utf-8")` 会把 BOM 当成一个 `\ufeff` 字符
+      **静默留在正文里**，而正文里那个字符肉眼看不见。
+    """
+    offenders = []
+    for path in _text_files():
+        try:
+            head = path.open("rb").read(3)
+        except OSError:
+            continue
+        if head == BOM:
+            offenders.append(str(path.relative_to(ROOT)))
+
+    assert not offenders, (
+        "以下文件以 UTF-8 BOM 开头：\n  "
+        + "\n  ".join(offenders)
+        + "\n\nBOM 会让 `python 文件.py` 在某些工具链下报 "
+          "`SyntaxError: invalid non-printable character U+FEFF`（2026-10-28 实测），"
+          "也会让 git 把整个文件当成改过。"
+          "★ 用 `Path.write_bytes(text.encode('utf-8'))` 写回，不要用 "
+          "PowerShell 的 `Set-Content -Encoding UTF8`（它会加 BOM）。")
+
+
+def test_the_bom_checker_can_fail(tmp_path):
+    """核验器自检：证明上面那条真会红，而不是一条永远绿的摆设。
+
+    ★ 同本文件里 `test_the_absolute_path_checker_can_fail` 的口径：
+      **若这里不红，上面那条的绿灯一概不可采信。**
+    """
+    with_bom = tmp_path / "with_bom.md"
+    with_bom.write_bytes(BOM + b"# hello\n")
+    assert with_bom.open("rb").read(3) == BOM, "核验器失灵：写进去的 BOM 读不出来"
+
+    without_bom = tmp_path / "without_bom.md"
+    without_bom.write_bytes(b"# hello\n")
+    assert without_bom.open("rb").read(3) != BOM, "核验器误报：没有 BOM 被判成有"
+
+    # ★★ 关键反向对照：文本层读法会**看不见** BOM，故本守卫必须走字节层
+    text_layer = with_bom.read_text(encoding="utf-8")
+    assert text_layer.startswith("\ufeff"), (
+        "这一条不是在测守卫，是在记录那个坑：`read_text(utf-8)` 会把 BOM "
+        "当成正文第一个字符静默留下——故字节层检查不可省")
+    assert "\ufeff" not in without_bom.read_text(encoding="utf-8")
