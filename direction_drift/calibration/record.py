@@ -265,5 +265,7 @@ def prompt_version_warning(record: Dict,
     r = check_prompt_version(record, current_prompt_version)
     if r["status"] != "stale":
         return None
-    return ("⚠ 标定已过期：" + r["reason"] +
+    # ★ 不带 `⚠ ` 前缀：调用方（`cli._load_calibration` → `cmd_check`）已经统一加了。
+    #   带上的话输出会变成 `⚠ ⚠ 标定已过期`（2026-10-28 实测）。
+    return ("标定已过期：" + r["reason"] +
             "。请用当前提示词重跑标定（`de calibrate`），不要沿用旧阈值。")

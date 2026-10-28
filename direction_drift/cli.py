@@ -237,6 +237,21 @@ def _load_calibration(args, card, align) -> Tuple[Dict, List[str]]:
         if not calib.get("mode"):
             warns.append("标定文件没有 mode 字段：标定性质未标注，"
                          "本命令不猜测它是正式还是合成。")
+        # ★★★ 2026-10-28（A）：性质⑤「标定有保质期」的**调用点**。
+        #   此前 `calibration/record.py::check_prompt_version` 只有实现、**没有调用点**
+        #   ⇒ README 那句「智能体改版后引擎**主动提醒**复检」只实现了一半
+        #   （"能判"做到了，"主动提醒"没做）。这一段就是那个"提醒"。
+        #
+        #   ★ 与上面的 `card_fingerprint` 检查**正交**：
+        #     卡指纹答「卡变没变」，本检查答「提示词变没变」——
+        #     任一变了标定都该复检，故两条都要有，不能互相代替。
+        #   ★★ 而它**只提醒，不改任何文件、不动任何阈值** ——「只显形，不修正」。
+        #   ★★★ `prompt_version_warning` 在 `unknown` 时返回 None 是刻意的：
+        #     一句「我不知道」的提醒会让人误以为引擎知道得多。故这里不另做判断。
+        from .calibration.record import prompt_version_warning
+        _pv_warn = prompt_version_warning(calib, card.prompt_version)
+        if _pv_warn:
+            warns.append(_pv_warn)
         # `weights` / `card_fingerprint` 从这里起**带进产物**：它们是契约里的
         # 可比性条件（calibration.weights 缺失 ⇒ not_comparable），此前本命令
         # 只取 low/high，产出的产物天生不可复算——挑刺 S4 指出的三处未传之一。
