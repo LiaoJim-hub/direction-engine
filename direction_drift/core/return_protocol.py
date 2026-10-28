@@ -89,10 +89,32 @@ class ReturnProtocol:
         #   "谁在什么时候返回了"** ⇒ "返回过"这件事不可溯，而这条线的规则二正是"可溯"。
         #   ★ 两种结局都记：成功与失败。失败不记 ⇒ 会把"返回失败"整段抹掉。
         self.returns: List[Dict] = []
+        self.streams: List[Dict] = []
 
     def return_log(self) -> List[Dict]:
         """返回动作的落痕（只读副本）。成功与失败都在里面。"""
         return [dict(r) for r in self.returns]
+
+    def stream_log(self) -> List[Dict]:
+        """★★★ 2026-10-29（纵切第一步）：**「停/看」在流式中发生过几次**。
+
+        ★ 它**不是** 
+eturn_log()（后者记的是**返回动作** —— resume() / revise()，
+          ★★ 而**两个都是人触发的**）。故两个账**分开**——
+          ★★★ 否则 
+eturn_log() == [] 那条旧断言就会说谎（而它原本是对的）。
+
+        ★ 而它记的是**时点**，不是「返回了一次」—— 因为「再选」按定义不许自动（根协议 3.0:29）。
+        """
+        return [dict(r) for r in self.streams]
+
+    def _log_stream(self, level: str) -> None:
+        """★ 一条「停/看」的落痕。★★ 而它**不记 state_after** ——
+        因为它记的不是「状态变到哪去」，是「在流式中发生了一次停/看」。"""
+        self.streams.append({"at": datetime.now().isoformat(timespec="seconds"),
+                             "level": level,
+                             "state": self.state,
+                             "trigger": "stream()"})
 
     def _log_return(self, ok: bool, cone: Optional[DirectionCone],
                     cause: Optional[BaseException] = None,
@@ -146,16 +168,24 @@ class ReturnProtocol:
 
         if level == "warning":
             self.state = "observing"
+            # ★★★ 2026-10-29（纵切第一步）：「看」第一次在账里出现。
+            #   在此之前 `_log_return` 只有 resume() / revise() 两个值 —— 两个都是人触发的
+            #   ⇒「流式中发生的停/看」在账里是 0。而 trigger 记的是**时点**，不是「返回了一次」。
+            self._log_stream(level)
             return {"action": "observe", "message": "对齐度下降，请检查当前输出是否仍指向目标",
                     "reasons": reasons, "diagnosis_calibrated": self.diag.calibrated}
         if level == "drift":
             self.state = "paused"
+            # ★★★ 「停」—— 三段里最该落痕的一段（停是入口）。
+            self._log_stream(level)
             return {"action": "pause", "message": "检测到方向漂移，暂停生成",
                     "direction": cone.goal if cone else "", "reasons": reasons,
                     "mean_score": drift_result.get("mean_score"),
                     "diagnosis_calibrated": self.diag.calibrated}
         if level == "confirmed_drift":
             self.state = "returning"
+            # ★★★ 「请求再选」—— ★ 而它不是再选本身（再选不许自动）。
+            self._log_stream(level)
             # v2.3.5：`frozen` 要报**实际做了什么**，不是"这条分支该做什么"。
             # 此前这里硬编码 `"frozen": True`，而 `cone` 为 None 时 `freeze()`
             # 根本没被调用——响应于是在陈述一件没发生的事。同一条字典里
