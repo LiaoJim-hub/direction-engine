@@ -80,7 +80,8 @@ class AlignmentCalculator:
         self.constraint_checker = constraint_checker or ConstraintChecker()
 
     def compute(self, cone: DirectionCone, output: str,
-                weights: Optional[Dict[str, float]] = None) -> Dict:
+                weights: Optional[Dict[str, float]] = None,
+                is_partial: bool = False) -> Dict:
         """算一条输出的对齐分。
 
         **空输出是一个性质问题，不是一个分数问题**（v2.3.3 修复）：
@@ -93,6 +94,23 @@ class AlignmentCalculator:
         调用方纪律：**不要**直接把 `overall_alignment` 当数字用，
         先看 `invalid`；任何在列表里聚合分数的循环都应当跳过 invalid 项
         （`DriftDetector.judge` 已内置这一处置，产出 `no_output` 级）。
+
+        ★★★ 2026-10-29（横切 · 依 docs/草案 与 docs/定义件）：
+        **新增 `is_partial=False`。它不是一个布尔开关，它把四个量分成两类。**
+
+        | 量 | 部分文本下 | 为什么 |
+        |---|---|---|
+        | `cone_alignment` | **仍给** | 归一化之后与文本长度无关 |
+        | `negative_similarity` | **仍给** | 同理 |
+        | `cone_position` / `angle` | **仍给** | 只看向量 |
+        | `constraint_satisfaction` | **不可核（None）** | 它 `check(text, …)` 吃原文 —— **约束可能在后半段才出现** |
+        | `overall_alignment` | **不可核（None）** | 它含上面那一项 |
+
+        ★★ 而这不是洁癖：若不分开，`constraint_satisfaction` 会**系统性偏低**
+        ⇒ `overall` 偏低 ⇒ **假阴性 ⇒ 误报漂移**。
+        ★★★ 那是「不许静默判绿」的对偶：**也不许静默判红**。
+        故「不可核」**必须显式标出来**（`is_partial` / `constraint_uncomputable`）——
+        因为 `None` 本身可以被读成"低分"。
         """
         if weights is None:
             weights = DEFAULT_WEIGHTS       # 占位权重；量程陷阱见模块 docstring
@@ -124,6 +142,21 @@ class AlignmentCalculator:
                 sims.append(float(np.dot(n / n_norm, out_normed)))
             neg_sim = max(sims) if sims else 0.0
         cone_result = cone.contains(out)
+
+        # ★★★ 部分文本 ⇒ constraint 那两项**不可核**（见 docstring 那张表）
+        if is_partial:
+            return {"cone_alignment": cone_alignment,
+                    "constraint_satisfaction": None,
+                    "constraint_violations": c_res["violations"],
+                    "negative_similarity": neg_sim,
+                    "overall_alignment": None,
+                    "cone_position": cone_result["position"],
+                    "angle": cone_result["angle"],
+                    "text_len": len(stripped),
+                    "is_partial": True,
+                    "constraint_uncomputable": True,
+                    "not_computable": ["constraint_satisfaction", "overall_alignment"],
+                    "reason": "partial_text"}
 
         overall = (weights["cone_alignment"] * cone_alignment
                    + weights["constraint_satisfaction"] * c_res["satisfaction"]
