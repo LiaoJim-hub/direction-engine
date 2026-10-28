@@ -370,6 +370,60 @@ def compare_artifacts(a: Dict[str, Any], b: Dict[str, Any], *,
         notes.append("calibration.card_fingerprint 为**事后补记**：一致只说明"
                      "自补记以来卡未变，不说明标定当时用的就是这张卡。")
 
+    # ★★★ 2026-10-28（A · 依敌手 D 第 16 轮 P0-2）：`calibration.prompt_version` 的同源比对。
+    #
+    #   病灶：`prompt_version` 此前**既不在信封里、也不在比对项里** —— 而同层邻居
+    #   `weights`（comparability）与 `card_fingerprint`（provenance）都被比了。
+    #   后果是那句「客户改完提示词、重跑检测、把两份产物交给第三方复算 ——
+    #   **verify 会说 consistent**」：两份用的都是同一套跨提示词版本的阈值，
+    #   而**它没有字段可以看见这件事**。
+    #
+    #   ★ 与 `card_fingerprint` **正交**：卡指纹答「卡变没变」，本项答「提示词变没变」。
+    #     而 `docs/scenario-card.md` 明写「`prompt_version` 不进指纹」——故它**只能**
+    #     靠本项被看见。
+    #   ★★ 三值：`equal` / `differ` / `uncomputable`。任一侧缺字段 ⇒ `uncomputable`
+    #     （**不得判绿**：旧产物没这个字段，把"没记"当"一致"就是把不知道渲染成通过）。
+    pv_a = _get(a, ["calibration", "prompt_version"])
+    pv_b = _get(b, ["calibration", "prompt_version"])
+    if pv_a is None or pv_b is None:
+        checks.append(_check("calibration.prompt_version",
+                             ["calibration", "prompt_version"], "provenance",
+                             "uncomputable", pv_a, pv_b,
+                             "任一侧产物没有 calibration.prompt_version（旧版本产物）"
+                             " ⇒ 无法判断两份阈值是否跨提示词版本，不得判绿"))
+        notes.append("calibration.prompt_version 不可核：两侧未能同时给出该字段。"
+                     "★ 这意味着**无法证明两份产物用的是同一套提示词下的阈值**——"
+                     "不得表述为「同源已验证」。")
+    elif pv_a == pv_b:
+        checks.append(_check("calibration.prompt_version",
+                             ["calibration", "prompt_version"], "provenance",
+                             "equal", pv_a, pv_b))
+    else:
+        checks.append(_check("calibration.prompt_version",
+                             ["calibration", "prompt_version"], "provenance",
+                             "differ", pv_a, pv_b,
+                             "两份产物里的标定记录的是不同 prompt_version "
+                             "⇒ 阈值不跨提示词版本有效，比分本身不具可比性"))
+        provenance_bad.append("calibration.prompt_version")
+
+    # ★★ 而"标定那一版 vs 卡当前这一版"是**另一件事**：前者是 A/B 之间同不同源，
+    #    后者是"这份阈值对当前这张卡还成不成立"。两个问题都要答，故两条比对各一句。
+    pv_cur = _get(a, ["card", "prompt_version"])
+    if pv_a is not None and pv_cur is not None:
+        if pv_a != pv_cur:
+            checks.append(_check("calibration.prompt_version_vs_card",
+                                 ["calibration", "prompt_version"], "provenance",
+                                 "differ", pv_a, pv_cur,
+                                 "标定时记的 prompt_version 与卡当前的**不同** "
+                                 "⇒ 标定已过期，阈值不属于当前这一版提示词"))
+            provenance_bad.append("calibration.prompt_version_vs_card")
+        else:
+            checks.append(_check("calibration.prompt_version_vs_card",
+                                 ["calibration", "prompt_version"], "provenance",
+                                 "equal", pv_a, pv_cur))
+    elif pv_a is not None:
+        notes.append("card.prompt_version 缺失（旧产物）⇒ 「标定是否已过期」不可判。")
+
     # 诚实边界（§8.5）：权重哈希不可得 ⇒ 只能证卡同源，不能证分数可复现
     for side, art in (("A", a), ("B", b)):
         if _get(art, ["encoder", "weights_hash"]) is None:
@@ -546,6 +600,14 @@ def build_artifact(*, engine_version: str, card, encoder_info: Dict[str, Any],
         "card": {
             "card_id": getattr(card, "card_id", None),
             "card_source": getattr(card, "card_source", None),
+            # ★★★ 2026-10-28（A · 依敌手 D 第 16 轮 P0-2 的延伸）：把卡的
+            #   `prompt_version` 也装进来。**报告只要求把标定侧的放进
+            #   `calibration`**，但只做那一半的话，产物里仍然**没有"当前是哪一版"**
+            #   ⇒ 「阈值是否过期」在产物里照样判不了（只能比 A/B 两产物之间，
+            #   不能比"标定那一版 vs 现在这一版"）。
+            #   ★ 而 `prompt_version` 本来就在卡上（`ScenarioCard.prompt_version`），
+            #     它只是没被挑进信封 —— 同 `calibration.prompt_version` 是同一个病。
+            "prompt_version": getattr(card, "prompt_version", None),
             "fingerprint": fp_text,
             "fingerprint_algo": algo or None,
             "fingerprint_digest": digest or None,

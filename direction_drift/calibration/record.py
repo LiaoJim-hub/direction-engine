@@ -267,5 +267,19 @@ def prompt_version_warning(record: Dict,
         return None
     # ★ 不带 `⚠ ` 前缀：调用方（`cli._load_calibration` → `cmd_check`）已经统一加了。
     #   带上的话输出会变成 `⚠ ⚠ 标定已过期`（2026-10-28 实测）。
+    #
+    # ★★★ 2026-10-28（A · 依敌手 D 第 16 轮 P0-1）：原文案写的是「请用当前提示词
+    #   重跑标定（`de calibrate`）」—— **而 `de calibrate` 这个子命令不存在**，
+    #   实测 `de: error: argument cmd: invalid choice: 'calibrate'`。
+    #   那条提醒是整个机制唯一产出价值的那一次输出（`match`/`unknown` 都不说话），
+    #   而它给出的**唯一下一步不可执行** —— 故这是 P0。
+    #
+    #   ★ 修法选"改文案"而不是"补一个 de calibrate 子命令"：后者会与既有分层冲突
+    #     （阈值属于标定产物，正式标定在私有仓产出）。故这里只说**本仓内能走的那条路**：
+    #     改卡的 `prompt_version` 后重跑 `de check` —— 它会用卡内样本重新自标定。
+    #   ★★ 而"正式标定"（`formal`）在别处产出，本句**不指它** —— ★ 因为那份件
+    #     是公开的，指到一个读者拿不到的地方等于没指。
     return ("标定已过期：" + r["reason"] +
-            "。请用当前提示词重跑标定（`de calibrate`），不要沿用旧阈值。")
+            "。修法（本仓内可执行）：把场景卡的 `prompt_version` 改成当前提示词版本，"
+            "然后重跑 `de check` —— 它会用卡内样本重新自标定（性质 `synthetic`）；"
+            "要 `formal` 性质的阈值，需用真实标注重新标定后再经 `--calibration` 传入。")

@@ -408,6 +408,13 @@ def _write_artifact(path, *, card, enc_name, calib, texts, results) -> None:
             "low": calib.get("low"), "high": calib.get("high"),
             "auc": calib.get("auc"), "source": calib.get("source"),
             "weights": calib.get("weights"),
+            # ★★★ 2026-10-28（A · 依敌手 D 第 16 轮 P0-2）：`prompt_version` 必须
+            #   进信封。此前 `_load_calibration` **返回了它**，而本函数逐项挑 8 个键
+            #   时把它漏了 —— 后果是：判出来的「过期」只活在 console 的一次性输出里，
+            #   **产物里没有字段可以看见它**，故第三方复算时「阈值是否过期」不可判。
+            #   ★ 与 `card_fingerprint` 正交：卡指纹答「卡变没变」，本字段答
+            #     「提示词变没变」—— 两者合起来才是「这份阈值还属于当前这一版吗」。
+            "prompt_version": calib.get("prompt_version"),
             "card_fingerprint": recorded_fp or live_fp,
             "card_fingerprint_status": ("recorded_at_calibration" if recorded_fp
                                         else "backfilled"),
